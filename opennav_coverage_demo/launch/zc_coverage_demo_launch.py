@@ -94,7 +94,7 @@ def generate_launch_description():
 
     # start navigation
     bringup_cmd = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(os.path.join(coverage_demo_dir, 'bringup_launch.py')),
+        PythonLaunchDescriptionSource(os.path.join(coverage_demo_dir, 'zc_bringup_launch.py')),
         launch_arguments={'params_file': param_file_path}.items(),
     )
 
