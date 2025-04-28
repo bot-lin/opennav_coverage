@@ -15,6 +15,10 @@
 
 from enum import Enum
 import time
+import threading
+import json
+import logging
+from flask import Flask, request, jsonify, Response
 
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Point32, Polygon
@@ -24,8 +28,9 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
-import threading
-from flask import Flask, request, jsonify
+
+# 配置日志记录
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 class TaskResult(Enum):
@@ -36,7 +41,7 @@ class TaskResult(Enum):
 
 
 class CoverageNavigatorTester(Node):
-
+    # 这里保留您现有的CoverageNavigatorTester类的代码
     def __init__(self):
         super().__init__(node_name='coverage_navigator_tester')
         self.goal_handle = None
@@ -140,6 +145,7 @@ class CoverageNavigatorTester(Node):
             time.sleep(2)
         return
 
+
 class CoverageNavigatorServer(CoverageNavigatorTester):
     """扩展CoverageNavigatorTester以提供HTTP API功能。"""
     
@@ -151,71 +157,88 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
         
     def setup_routes(self):
         """设置HTTP路由。"""
-        self.app.route('/navigate_coverage', methods=['POST'])(self.handle_navigate_coverage)
-        self.app.route('/status', methods=['GET'])(self.handle_status)
-        
-    def handle_navigate_coverage(self):
-        """HTTP处理程序，接收field数据并启动导航覆盖任务。"""
-        if not request.is_json:
-            return jsonify({"error": "请求必须是JSON格式"}), 400
-            
-        data = request.get_json()
-        if 'field' not in data:
-            return jsonify({"error": "缺少'field'字段"}), 400
-            
-        field = data['field']
-        if not isinstance(field, list) or len(field) < 3:
-            return jsonify({"error": "'field'必须是至少包含3个坐标点的列表"}), 400
-            
-        # 如果有正在运行的任务，先取消它
-        if self.task_thread and self.task_thread.is_alive():
-            return jsonify({"error": "已有导航任务正在运行中"}), 409
-            
-        # 在新线程中启动导航任务
-        self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field,))
-        self.task_thread.start()
-        
-        return jsonify({"status": "导航任务已启动"}), 202
-        
-    def handle_status(self):
-        """返回当前导航任务的状态。"""
-        if self.task_thread and self.task_thread.is_alive():
-            status = "运行中"
-            if self.feedback:
-                remaining_time = Duration.from_msg(self.feedback.estimated_time_remaining).nanoseconds / 1e9
+        @self.app.route('/navigate_coverage', methods=['POST'])
+        def handle_navigate_coverage():
+            try:
+                logging.info(f"收到导航请求，内容类型: {request.content_type}")
+                
+                if not request.is_json:
+                    logging.error(f"请求不是JSON格式: {request.data}")
+                    return jsonify({"error": "请求必须是JSON格式"}), 400
+                
+                data = request.get_json(force=True)  # 使用force=True尝试强制解析JSON
+                logging.info(f"解析的JSON数据: {data}")
+                
+                if 'field' not in data:
+                    return jsonify({"error": "缺少'field'字段"}), 400
+                    
+                field = data['field']
+                if not isinstance(field, list) or len(field) < 3:
+                    return jsonify({"error": "'field'必须是至少包含3个坐标点的列表"}), 400
+                    
+                # 如果有正在运行的任务，先取消它
+                if self.task_thread and self.task_thread.is_alive():
+                    return jsonify({"error": "已有导航任务正在运行中"}), 409
+                    
+                # 在新线程中启动导航任务
+                self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field,))
+                self.task_thread.start()
+                
+                return jsonify({"status": "导航任务已启动"}), 202
+            except Exception as e:
+                logging.exception("处理导航请求时出错:")
+                return jsonify({"error": f"服务器处理请求时发生错误: {str(e)}"}), 500
+
+        @self.app.route('/navigate_coverage', methods=['OPTIONS'])
+        def handle_options():
+            response = Response()
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+            response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+            return response
+
+        @self.app.route('/status', methods=['GET'])
+        def handle_status():
+            """返回当前导航任务的状态。"""
+            if self.task_thread and self.task_thread.is_alive():
+                status = "运行中"
+                if self.feedback:
+                    remaining_time = Duration.from_msg(self.feedback.estimated_time_remaining).nanoseconds / 1e9
+                    return jsonify({
+                        "status": status,
+                        "estimated_time_remaining": f"{remaining_time:.1f} 秒"
+                    })
+                return jsonify({"status": status})
+            else:
+                result = self.getResult()
+                status = "未知"
+                if result == TaskResult.SUCCEEDED:
+                    status = "成功"
+                elif result == TaskResult.CANCELED:
+                    status = "已取消"
+                elif result == TaskResult.FAILED:
+                    status = "失败"
+                    
                 return jsonify({
                     "status": status,
-                    "estimated_time_remaining": f"{remaining_time:.1f} 秒"
+                    "task_complete": True
                 })
-            return jsonify({"status": status})
-        else:
-            result = self.getResult()
-            status = "未知"
-            if result == TaskResult.SUCCEEDED:
-                status = "成功"
-            elif result == TaskResult.CANCELED:
-                status = "已取消"
-            elif result == TaskResult.FAILED:
-                status = "失败"
-                
-            return jsonify({
-                "status": status,
-                "task_complete": True
-            })
     
     def _run_navigation_task(self, field):
         """在单独的线程中运行导航任务。"""
+        logging.info(f"开始导航任务，区域: {field}")
         self.navigateCoverage(field)
         
         while not self.isTaskComplete():
             feedback = self.getFeedback()
             time.sleep(1)
             
-        print(f"导航任务完成，结果: {self.getResult()}")
+        logging.info(f"导航任务完成，结果: {self.getResult()}")
         
-    def run_server(self, host='0.0.0.0', port=1235):
+    def run_server(self, host='0.0.0.0', port=1235):  # 修改端口为1235
         """启动HTTP服务器。"""
-        print(f"开启HTTP服务器在 http://{host}:{port}/")
+        logging.info(f"开启HTTP服务器在 http://{host}:{port}/")
+        # 启用CORS支持，设置线程模式
         self.app.run(host=host, port=port, debug=False, threaded=True)
 
 
@@ -235,10 +258,11 @@ def main():
     try:
         navigator_server.run_server()
     except KeyboardInterrupt:
-        print("服务器正在关闭...")
+        logging.info("服务器正在关闭...")
     finally:
         navigator_server.destroy_node()
         rclpy.shutdown()
+
 
 if __name__ == '__main__':
     main()
