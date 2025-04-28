@@ -109,7 +109,7 @@ def generate_launch_description():
     # start the demo task
     demo_cmd = Node(
         package='opennav_coverage_demo',
-        executable='demo_coverage',
+        executable='demo_coverage_http',
         emulate_tty=True,
         output='screen',
     )
