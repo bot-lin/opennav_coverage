@@ -146,7 +146,7 @@ def main():
     navigator.startup()
 
     # Some example field
-    field = [[5.0, 5.0], [5.0, 15.0], [15.0, 15.0], [10.0, 5.0], [5.0, 5.0]]
+    field = [[3.15,-10.1], [5.9,-10.1], [5.9,-6.5], [3.15,-10.1]]
     navigator.navigateCoverage(field)
 
     i = 0

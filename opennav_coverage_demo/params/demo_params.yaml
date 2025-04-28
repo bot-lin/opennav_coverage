@@ -22,7 +22,7 @@ row_coverage_server:
     default_swath_type: "CENTER"
     default_offset: 0.0
 
-bt_navigator:
+bt_navigator_full_coverage:
   ros__parameters:
     use_sim_time: True
     global_frame: map

@@ -25,7 +25,7 @@ def generate_launch_description():
     params_file = LaunchConfiguration('params_file')
 
     lifecycle_nodes = [
-                       'bt_navigator',
+                       'bt_navigator_full_coverage',
                        'coverage_server']
 
     remappings = [('/tf', 'tf'),
@@ -77,7 +77,7 @@ def generate_launch_description():
             ComposableNode(
                 package='nav2_bt_navigator',
                 plugin='nav2_bt_navigator::BtNavigator',
-                name='bt_navigator',
+                name='bt_navigator_full_coverage',
                 parameters=[configured_params],
                 remappings=remappings),
             # ComposableNode(
