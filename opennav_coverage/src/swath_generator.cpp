@@ -42,8 +42,8 @@ Swaths SwathGenerator::generateSwaths(
     step_angle = settings.step_angle;
   }
 
-  RCLCPP_DEBUG(
-    logger_, "Generating Swaths with: %s", toString(action_type, action_angle_type).c_str());
+  RCLCPP_INFO(
+    logger_, "Generating Swaths with: %s, swath_angle: %f", toString(action_type, action_angle_type).c_str(), swath_angle);
 
   generator_->setAllowOverlap(default_allow_overlap_);
   switch (action_angle_type) {
