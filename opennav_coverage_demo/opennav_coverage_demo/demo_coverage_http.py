@@ -186,7 +186,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 if not isinstance(field, list) or len(field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
                 
-                if swath_angle in data:
+                if 'swath_angle' in data:
                     swath_angle = data['swath_angle']
                     if not isinstance(swath_angle, (int, float)):
                         return jsonify({"code": 1,"error": "'swath_angle'必须是数字"}), 400
