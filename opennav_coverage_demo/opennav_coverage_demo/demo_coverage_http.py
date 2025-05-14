@@ -147,7 +147,7 @@ class CoverageNavigatorTester(Node):
 
     def cancelTask(self):
         """Cancel pending task request of any type."""
-        self.info('Canceling current task.')
+        self.get_logger().info('Canceling current task.')
         if self.result_future:
             future = self.goal_handle.cancel_goal_async()
             rclpy.spin_until_future_complete(self, future)
