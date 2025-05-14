@@ -30,6 +30,7 @@ bt_navigator_full_coverage:
     odom_topic: /odom
     bt_loop_duration: 10
     default_server_timeout: 20
+    wait_for_service_timeout: 50000 # 50 seconds
     # 'default_coverage_bt_xml' uses defaults:
     # opennav_coverage_bt/behavior_tree/navigate_w_basic_complete_coverage.xml
     navigators: ['navigate_complete_coverage']
