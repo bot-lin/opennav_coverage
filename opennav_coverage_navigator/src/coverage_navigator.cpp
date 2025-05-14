@@ -234,6 +234,8 @@ CoverageNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr goal)
     polygon_blackboard_id_, goal->polygons);
   blackboard->set<std::string>(polygon_frame_blackboard_id_, goal->frame_id);
   blackboard->set<double>(swath_angle_blackboard_id_, goal->swath_angle);
+  RCLRCPP_INFO(
+    logger_, "Set swath angle to %f", goal->swath_angle);
 }
 
 }  // namespace opennav_coverage_navigator
