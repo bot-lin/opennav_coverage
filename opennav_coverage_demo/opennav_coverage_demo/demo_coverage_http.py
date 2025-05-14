@@ -29,10 +29,6 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 
-from action_msgs.srv import CancelGoal
-from action_msgs.msg import GoalStatus
-from rclpy.action.client import CancelResponse
-
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
