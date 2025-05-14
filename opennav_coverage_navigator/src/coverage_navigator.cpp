@@ -53,7 +53,7 @@ CoverageNavigator::configure(
   if (!node->has_parameter("swath_angle_blackboard_id")) {
     node->declare_parameter("swath_angle_blackboard_id", std::string("swath_angle_id"));
   }
-  swath_angle_blackboard_id_ = node->get_parameter("swath_angle_blackboard_id_").as_string();
+  swath_angle_blackboard_id_ = node->get_parameter("swath_angle_blackboard_id").as_string();
 
   // Odometry smoother object for getting current speed
   odom_smoother_ = odom_smoother;
