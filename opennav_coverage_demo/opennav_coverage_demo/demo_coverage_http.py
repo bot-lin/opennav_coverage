@@ -232,7 +232,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     "task_complete": True
                 })
 
-        @self.app.route('/cancel', methods=['POST'])
+        @self.app.route('/cancel', methods=['GET'])
         def handle_cancel():
             """取消当前正在执行的导航任务。"""
             try:
