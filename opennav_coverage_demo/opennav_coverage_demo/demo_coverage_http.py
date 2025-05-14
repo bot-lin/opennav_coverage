@@ -74,6 +74,7 @@ class CoverageNavigatorTester(Node):
         goal_msg = NavigateCompleteCoverage.Goal()
         goal_msg.frame_id = 'map'
         goal_msg.swath_angle = swath_angle
+        goal_msg.behavior_tree = "/data/ws_full_path/install/opennav_coverage_bt/share/opennav_coverage_bt/behavior_trees/navigate_w_basic_complete_coverage_nav_to_start.xml"
         goal_msg.polygons.append(self.toPolygon(field))
 
         print('Navigating to with field of size: ' + str(len(field)) + '...')
