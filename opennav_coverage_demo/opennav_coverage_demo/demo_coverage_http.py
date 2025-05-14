@@ -29,6 +29,10 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 
+from action_msgs.srv import CancelGoal
+from action_msgs.msg import GoalStatus
+from rclpy.action.client import CancelResponse
+
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -145,6 +149,25 @@ class CoverageNavigatorTester(Node):
             time.sleep(2)
         return
 
+    def cancelTask(self):
+        """取消当前正在执行的导航任务。"""
+        if self.goal_handle is not None and self.goal_handle.is_active:
+            print('正在取消导航任务...')
+            future = self.goal_handle.cancel_goal_async()
+            rclpy.spin_until_future_complete(self, future)
+            cancel_response = future.result()
+            
+            if cancel_response.return_code == CancelResponse.ACCEPT:
+                print('取消请求被接受')
+                self.status = GoalStatus.STATUS_CANCELED
+                return True
+            else:
+                print(f'取消请求被拒绝，代码: {cancel_response.return_code}')
+                return False
+        else:
+            print('没有活跃的导航任务可取消')
+            return False
+
 
 class CoverageNavigatorServer(CoverageNavigatorTester):
     """扩展CoverageNavigatorTester以提供HTTP API功能。"""
@@ -223,6 +246,43 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     "status": status,
                     "task_complete": True
                 })
+
+        @self.app.route('/cancel', methods=['POST'])
+        def handle_cancel():
+            """取消当前正在执行的导航任务。"""
+            try:
+                logging.info("收到取消导航任务请求")
+                
+                # 检查是否有正在运行的任务
+                if not self.task_thread or not self.task_thread.is_alive():
+                    return jsonify({
+                        "code": 1,
+                        "error": "当前没有正在运行的导航任务"
+                    }), 404
+                
+                # 尝试取消任务
+                cancel_result = self.cancelTask()
+                
+                if cancel_result:
+                    # 等待任务线程结束
+                    if self.task_thread:
+                        self.task_thread.join(timeout=2.0)  # 等待最多2秒
+                        
+                    return jsonify({
+                        "code": 0,
+                        "status": "导航任务已取消"
+                    }), 200
+                else:
+                    return jsonify({
+                        "code": 1,
+                        "error": "无法取消任务，可能已完成或发生错误"
+                    }), 500
+            except Exception as e:
+                logging.exception("处理取消请求时出错:")
+                return jsonify({
+                    "code": 1, 
+                    "error": f"服务器处理取消请求时发生错误: {str(e)}"
+                }), 500
     
     def _run_navigation_task(self, field):
         """在单独的线程中运行导航任务。"""
