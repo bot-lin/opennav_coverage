@@ -164,30 +164,30 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 
                 if not request.is_json:
                     logging.error(f"请求不是JSON格式: {request.data}")
-                    return jsonify({"error": "请求必须是JSON格式"}), 400
+                    return jsonify({"code": 1,"error": "请求必须是JSON格式"}), 400
                 
                 data = request.get_json(force=True)  # 使用force=True尝试强制解析JSON
                 logging.info(f"解析的JSON数据: {data}")
                 
                 if 'field' not in data:
-                    return jsonify({"error": "缺少'field'字段"}), 400
+                    return jsonify({"code": 1,"error": "缺少'field'字段"}), 400
                     
                 field = data['field']
                 if not isinstance(field, list) or len(field) < 3:
-                    return jsonify({"error": "'field'必须是至少包含3个坐标点的列表"}), 400
+                    return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
                     
                 # 如果有正在运行的任务，先取消它
                 if self.task_thread and self.task_thread.is_alive():
-                    return jsonify({"error": "已有导航任务正在运行中"}), 409
+                    return jsonify({"code": 1,"error": "已有导航任务正在运行中"}), 409
                     
                 # 在新线程中启动导航任务
                 self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field,))
                 self.task_thread.start()
                 
-                return jsonify({"status": "导航任务已启动"}), 202
+                return jsonify({"code": 0,"status": "导航任务已启动"}), 202
             except Exception as e:
                 logging.exception("处理导航请求时出错:")
-                return jsonify({"error": f"服务器处理请求时发生错误: {str(e)}"}), 500
+                return jsonify({"code": 1, "error": f"服务器处理请求时发生错误: {str(e)}"}), 500
 
         @self.app.route('/navigate_coverage', methods=['OPTIONS'])
         def handle_options():
