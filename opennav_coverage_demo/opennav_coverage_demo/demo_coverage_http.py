@@ -65,7 +65,7 @@ class CoverageNavigatorTester(Node):
             poly.points.append(pt)
         return poly
 
-    def navigateCoverage(self, field):
+    def navigateCoverage(self, field, swath_angle=0.0):
         """Send a `NavToPose` action request."""
         print("Waiting for 'NavigateCompleteCoverage' action server")
         while not self.coverage_client.wait_for_server(timeout_sec=1.0):
@@ -73,6 +73,7 @@ class CoverageNavigatorTester(Node):
 
         goal_msg = NavigateCompleteCoverage.Goal()
         goal_msg.frame_id = 'map'
+        goal_msg.swath_angle = swath_angle
         goal_msg.polygons.append(self.toPolygon(field))
 
         print('Navigating to with field of size: ' + str(len(field)) + '...')
@@ -183,13 +184,20 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 field = data['field']
                 if not isinstance(field, list) or len(field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
+                
+                if swath_angle in data:
+                    swath_angle = data['swath_angle']
+                    if not isinstance(swath_angle, (int, float)):
+                        return jsonify({"code": 1,"error": "'swath_angle'必须是数字"}), 400
+                else:
+                    swath_angle = 0.0
                     
                 # 如果有正在运行的任务，先取消它
                 if self.task_thread and self.task_thread.is_alive():
                     return jsonify({"code": 1,"error": "已有导航任务正在运行中"}), 409
                     
                 # 在新线程中启动导航任务
-                self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field,))
+                self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field, swath_angle,))
                 self.task_thread.start()
                 
                 return jsonify({"code": 0,"status": "导航任务已启动"}), 202
@@ -269,10 +277,10 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     "error": f"服务器处理取消请求时发生错误: {str(e)}"
                 }), 500
     
-    def _run_navigation_task(self, field):
+    def _run_navigation_task(self, field, swath_angle):
         """在单独的线程中运行导航任务。"""
-        logging.info(f"开始导航任务，区域: {field}")
-        self.navigateCoverage(field)
+        logging.info(f"开始导航任务，区域: {field}, 扫描角度: {swath_angle}")
+        self.navigateCoverage(field, swath_angle)
         
         while not self.isTaskComplete():
             feedback = self.getFeedback()

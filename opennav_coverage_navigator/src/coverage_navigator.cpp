@@ -49,6 +49,12 @@ CoverageNavigator::configure(
   }
   polygon_frame_blackboard_id_ = node->get_parameter("polygon_frame_blackboard_id").as_string();
 
+
+  if (!node->has_parameter("swath_angle_blackboard_id")) {
+    node->declare_parameter("swath_angle_blackboard_id", std::string("swath_angle_id"));
+  }
+  swath_angle_blackboard_id_ = node->get_parameter("swath_angle_blackboard_id_").as_string();
+
   // Odometry smoother object for getting current speed
   odom_smoother_ = odom_smoother;
   return true;
@@ -227,6 +233,7 @@ CoverageNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr goal)
   blackboard->set<std::vector<geometry_msgs::msg::Polygon>>(
     polygon_blackboard_id_, goal->polygons);
   blackboard->set<std::string>(polygon_frame_blackboard_id_, goal->frame_id);
+  blackboard->set<double>(swath_angle_blackboard_id_, goal->swath_angle);
 }
 
 }  // namespace opennav_coverage_navigator

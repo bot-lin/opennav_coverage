@@ -1,6 +1,6 @@
 coverage_server:
   ros__parameters:
-    use_sim_time: True
+    use_sim_time: False
     default_headland_width: 0.25
     robot_width: 0.7
     operation_width: 0.7
@@ -9,11 +9,11 @@ coverage_server:
     coordinates_in_cartesian_frame: true
     default_allow_overlap: false
     default_swath_angle_type: "SET_ANGLE"
-    default_swath_angle: 0.0 # We know its aligned for the demo
+    default_swath_angle: 3.14 # We know its aligned for the demo
 
 row_coverage_server:
   ros__parameters:
-    use_sim_time: True
+    use_sim_time: False
     robot_width: 0.7
     operation_width: 0.7
     min_turning_radius: 0.35
@@ -24,7 +24,7 @@ row_coverage_server:
 
 bt_navigator_full_coverage:
   ros__parameters:
-    use_sim_time: True
+    use_sim_time: False
     global_frame: map
     robot_base_frame: base_link
     odom_topic: /odom

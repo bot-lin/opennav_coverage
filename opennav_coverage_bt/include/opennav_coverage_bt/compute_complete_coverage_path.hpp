@@ -88,6 +88,7 @@ public:
 
         BT::InputPort<std::string>("file_field", "Filepath to field GML file"),
         BT::InputPort<int>("file_field_id", 0, "Ordered ID of which field to use in GML File"),
+        BT::InputPort<double>("swath_angle", 0.0, "Angle of swath in radians"),
         BT::InputPort<std::vector<geometry_msgs::msg::Polygon>>(
           "polygons", "Port-provided polygon, if not from file"),
         BT::InputPort<std::string>("polygons_frame_id", "map", "Port-provided polygon's frame"),

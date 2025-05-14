@@ -8,6 +8,7 @@ geometry_msgs/Polygon[] polygons
 string frame_id map # Specify the frame of reference of the polygon field
 
 string behavior_tree
+float64 swath_angle
 ---
 #result definition
 
