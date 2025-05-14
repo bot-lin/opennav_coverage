@@ -150,23 +150,12 @@ class CoverageNavigatorTester(Node):
         return
 
     def cancelTask(self):
-        """取消当前正在执行的导航任务。"""
-        if self.goal_handle is not None and self.goal_handle.is_active:
-            print('正在取消导航任务...')
+        """Cancel pending task request of any type."""
+        self.info('Canceling current task.')
+        if self.result_future:
             future = self.goal_handle.cancel_goal_async()
             rclpy.spin_until_future_complete(self, future)
-            cancel_response = future.result()
-            
-            if cancel_response.return_code == CancelResponse.ACCEPT:
-                print('取消请求被接受')
-                self.status = GoalStatus.STATUS_CANCELED
-                return True
-            else:
-                print(f'取消请求被拒绝，代码: {cancel_response.return_code}')
-                return False
-        else:
-            print('没有活跃的导航任务可取消')
-            return False
+        return True
 
 
 class CoverageNavigatorServer(CoverageNavigatorTester):
