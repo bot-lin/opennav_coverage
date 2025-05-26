@@ -163,6 +163,9 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
         super().__init__()
         self.app = Flask(__name__)
         self.task_thread = None
+        self.repeat_times = 1
+        self.current_repeat = 0
+        self.cancel_required = False
         self.setup_routes()
         
     def setup_routes(self):
@@ -192,13 +195,20 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                         return jsonify({"code": 1,"error": "'swath_angle'必须是数字"}), 400
                 else:
                     swath_angle = 0.0
+                
+                if "repeat_times" in data:
+                    repeat_times = data['repeat_times']
+                    if not isinstance(repeat_times, int) or repeat_times < 1:
+                        return jsonify({"code": 1,"error": "'repeat_times'必须是正整数"}), 400
+                else:
+                    repeat_times = 1
                     
                 # 如果有正在运行的任务，先取消它
                 if self.task_thread and self.task_thread.is_alive():
                     return jsonify({"code": 1,"error": "已有导航任务正在运行中"}), 409
                     
                 # 在新线程中启动导航任务
-                self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field, swath_angle,))
+                self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field, swath_angle, repeat_times,))
                 self.task_thread.start()
                 
                 return jsonify({"code": 0,"status": "导航任务已启动"}), 202
@@ -218,7 +228,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
         def handle_status():
             """返回当前导航任务的状态。"""
             if self.task_thread and self.task_thread.is_alive():
-                status = "运行中"
+                status = "运行中, 重复次数: {}/{}".format(self.current_repeat, self.repeat_times)
                 if self.feedback:
                     remaining_time = Duration.from_msg(self.feedback.estimated_time_remaining).nanoseconds / 1e9
                     return jsonify({
@@ -256,6 +266,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 
                 # 尝试取消任务
                 cancel_result = self.cancelTask()
+                self.cancel_required = True
                 
                 if cancel_result:
                     # 等待任务线程结束
@@ -278,16 +289,23 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     "error": f"服务器处理取消请求时发生错误: {str(e)}"
                 }), 500
     
-    def _run_navigation_task(self, field, swath_angle):
-        """在单独的线程中运行导航任务。"""
-        logging.info(f"开始导航任务，区域: {field}, 扫描角度: {swath_angle}")
-        self.navigateCoverage(field, swath_angle)
-        
-        while not self.isTaskComplete():
-            feedback = self.getFeedback()
-            time.sleep(1)
+    def _run_navigation_task(self, field, swath_angle, repeat_times=1):
+        self.repeat_times = repeat_times
+        for i in range(repeat_times):
+            self.current_repeat = i + 1
+            if self.cancel_required:
+                logging.info("取消请求已收到，停止导航任务。")
+                self.cancel_required = False
+                return
+            """在单独的线程中运行导航任务。"""
+            logging.info(f"开始导航任务，区域: {field}, 扫描角度: {swath_angle}")
+            self.navigateCoverage(field, swath_angle)
             
-        logging.info(f"导航任务完成，结果: {self.getResult()}")
+            while not self.isTaskComplete():
+                feedback = self.getFeedback()
+                time.sleep(1)
+                
+            logging.info(f"导航任务完成，结果: {self.getResult()}")
         
     def run_server(self, host='0.0.0.0', port=1235):  # 修改端口为1235
         """启动HTTP服务器。"""
