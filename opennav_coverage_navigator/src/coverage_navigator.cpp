@@ -59,6 +59,7 @@ CoverageNavigator::configure(
     node->declare_parameter("swath_mode_blackboard_id", std::string("swath_mode"));
   }
   swath_mode_blackboard_id_ = node->get_parameter("swath_mode_blackboard_id").as_string();
+  
   if (!node->has_parameter("swath_step_angle_blackboard_id")) {
     node->declare_parameter("swath_step_angle_blackboard_id", std::string("swath_step_angle"));
   }
