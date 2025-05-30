@@ -8,7 +8,11 @@ geometry_msgs/Polygon[] polygons
 string frame_id map # Specify the frame of reference of the polygon field
 
 string behavior_tree
-float64 swath_angle
+float64 swath_angle #same as best_angle in SwathMode.msg
+string mode "UNKNOWN"  # BRUTE_FORCE, SET_ANGLE
+string objective "UNKNOWN"  # LENGTH, NUMBER, or COVERAGE
+float32 step_angle 1.7453e-2 # If mode=BRUTE_FORCE, angular step to search
+
 ---
 #result definition
 

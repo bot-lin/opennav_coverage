@@ -55,6 +55,19 @@ CoverageNavigator::configure(
   }
   swath_angle_blackboard_id_ = node->get_parameter("swath_angle_blackboard_id").as_string();
 
+  if (!node->has_parameter("swath_mode_blackboard_id")) {
+    node->declare_parameter("swath_mode_blackboard_id", std::string("swath_mode"));
+  }
+  swath_mode_blackboard_id_ = node->get_parameter("swath_mode_blackboard_id").as_string();
+  if (!node->has_parameter("swath_step_angle_blackboard_id")) {
+    node->declare_parameter("swath_step_angle_blackboard_id", std::string("swath_step_angle"));
+  }
+  swath_step_angle_blackboard_id_ = node->get_parameter("swath_step_angle_blackboard_id").as_string();
+  if (!node->has_parameter("swath_objective_blackboard_id")) {
+    node->declare_parameter("swath_objective_blackboard_id", std::string("swath_objective"));
+  }
+  swath_objective_blackboard_id_ = node->get_parameter("swath_objective_blackboard_id").as_string();
+
   // Odometry smoother object for getting current speed
   odom_smoother_ = odom_smoother;
   return true;
@@ -234,8 +247,17 @@ CoverageNavigator::initializeGoalPose(ActionT::Goal::ConstSharedPtr goal)
     polygon_blackboard_id_, goal->polygons);
   blackboard->set<std::string>(polygon_frame_blackboard_id_, goal->frame_id);
   blackboard->set<double>(swath_angle_blackboard_id_, goal->swath_angle);
+  blackboard->set<std::string>(swath_mode_blackboard_id_, goal->mode);
+  blackboard->set<double>(swath_step_angle_blackboard_id_, goal->step_angle);
+  blackboard->set<std::string>(swath_objective_blackboard_id_, goal->objective);
+  RCLCPP_INFO(
+    logger_, "Set swath mode to %s", goal->mode.c_str());
   RCLCPP_INFO(
     logger_, "Set swath angle to %f", goal->swath_angle);
+  RCLCPP_INFO(
+    logger_, "Set swath step angle to %f", goal->step_angle);
+  RCLCPP_INFO(
+    logger_, "Set swath objective to %s", goal->objective.c_str());
 }
 
 }  // namespace opennav_coverage_navigator

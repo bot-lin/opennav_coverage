@@ -116,6 +116,9 @@ protected:
 
   rclcpp::Time start_time_;
   std::string path_blackboard_id_, field_blackboard_id_, polygon_blackboard_id_, swath_angle_blackboard_id_;
+  std:string swath_mode_blackboard_id_;
+  std::string swath_step_angle_blackboard_id_;
+  std::string swath_objective_blackboard_id_;
   std::string polygon_frame_blackboard_id_;
 
   // Odometry smoother object

@@ -28,7 +28,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
-
+import math
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -65,7 +65,7 @@ class CoverageNavigatorTester(Node):
             poly.points.append(pt)
         return poly
 
-    def navigateCoverage(self, field, swath_angle=0.0):
+    def navigateCoverage(self, field, swath_angle=0.0, mode='SET_ANGLE', step_angle=0.0, objective=""):
         """Send a `NavToPose` action request."""
         print("Waiting for 'NavigateCompleteCoverage' action server")
         while not self.coverage_client.wait_for_server(timeout_sec=1.0):
@@ -74,6 +74,9 @@ class CoverageNavigatorTester(Node):
         goal_msg = NavigateCompleteCoverage.Goal()
         goal_msg.frame_id = 'map'
         goal_msg.swath_angle = swath_angle
+        goal_msg.mode = mode
+        goal_msg.step_angle = step_angle
+        goal_msg.objective = objective
         goal_msg.behavior_tree = "/data/ws_full_path/install/opennav_coverage_bt/share/opennav_coverage_bt/behavior_trees/navigate_w_basic_complete_coverage_nav_to_start.xml"
         goal_msg.polygons.append(self.toPolygon(field))
 
@@ -189,12 +192,35 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 if not isinstance(field, list) or len(field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
                 
-                if "swath_angle" in data:
-                    swath_angle = data['swath_angle']
+                if "mode" in data:
+                    mode = data['mode']
+                    if mode not in ['SET_ANGLE', 'BRUTE_FORCE']:
+                        return jsonify({"code": 1,"error": "'mode must be 'SET_ANGLE' or 'BRUTE_FORCE'"}), 400
+                else:
+                    mode = 'SET_ANGLE'
+                
+                if "best_angle" in data:
+                    swath_angle = data['best_angle']
+                    
                     if not isinstance(swath_angle, (int, float)):
-                        return jsonify({"code": 1,"error": "'swath_angle'必须是数字"}), 400
+                        return jsonify({"code": 1,"error": "'best_angle'必须是数字"}), 400
+                    swath_angle = math.radians(swath_angle)  # 转换为弧度
                 else:
                     swath_angle = 0.0
+
+                if "step_angle" in data:
+                    step_angle = data['step_angle']
+                    if not isinstance(step_angle, (int, float)):
+                        return jsonify({"code": 1,"error": "'step_angle'必须是数字"}), 400
+                    step_angle = math.radians(step_angle)
+                else:
+                    step_angle = 0.0
+                if "objective" in data:
+                    objective = data['objective']
+                    if objective not in ['LENGTH', 'NUMBER', 'COVERAGE']:
+                        return jsonify({"code": 1,"error": "'objective'必须是'LENGTH', 'NUMBER'或'COVERAGE'"}), 400
+                else:
+                    objective = ''
                 
                 if "repeat_times" in data:
                     repeat_times = data['repeat_times']
@@ -208,7 +234,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     return jsonify({"code": 1,"error": "已有导航任务正在运行中"}), 409
                     
                 # 在新线程中启动导航任务
-                self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field, swath_angle, repeat_times,))
+                self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field, swath_angle, repeat_times, mode, objective, step_angle))
                 self.task_thread.start()
                 
                 return jsonify({"code": 0,"status": "导航任务已启动"}), 202
@@ -289,7 +315,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     "error": f"服务器处理取消请求时发生错误: {str(e)}"
                 }), 500
     
-    def _run_navigation_task(self, field, swath_angle, repeat_times=1):
+    def _run_navigation_task(self, field, swath_angle, repeat_times=1, mode='SET_ANGLE', objective='', step_angle=0.0):
+        """在单独的线程中运行导航任务。"""
         self.repeat_times = repeat_times
         for i in range(repeat_times):
             self.current_repeat = i + 1
@@ -299,7 +326,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 return
             """在单独的线程中运行导航任务。"""
             logging.info(f"开始导航任务，区域: {field}, 扫描角度: {swath_angle}")
-            self.navigateCoverage(field, swath_angle)
+            self.navigateCoverage(field, swath_angle, mode=mode, step_angle=step_angle, objective=objective)
             
             while not self.isTaskComplete():
                 feedback = self.getFeedback()

@@ -35,7 +35,9 @@ void ComputeCoveragePathAction::on_tick()
   getInput("generate_route", goal_.generate_route);
   getInput("generate_path", goal_.generate_path);
   getInput("swath_angle", goal_.swath_mode.best_angle);
-  goal_.swath_mode.mode = "SET_ANGLE";
+  getInput("step_angle", goal_.swath_mode.step_angle);
+  getInput("objective", goal_.swath_mode.objective);
+  getInput("mode", goal_.swath_mode.mode);
 
   // Get the field to get coverage for
   std::string gml_filename;
