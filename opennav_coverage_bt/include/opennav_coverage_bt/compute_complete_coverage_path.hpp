@@ -89,7 +89,7 @@ public:
         BT::InputPort<std::string>("file_field", "Filepath to field GML file"),
         BT::InputPort<int>("file_field_id", 0, "Ordered ID of which field to use in GML File"),
         BT::InputPort<double>("swath_angle", 0.0, "Angle of swath in radians"),
-        BT::InputPort<double<("step_angle", 0.0, "Angle step for swath angle optimization"),
+        BT::InputPort<double>("step_angle", 0.0, "Angle step for swath angle optimization"),
         BT::InputPort<std::string>("mode", "SET_ANGLE", "Swath angle mode, e.g. SET_ANGLE, BRUTE_FORCE"),
         BT::InputPort<std::string>("objective", "COVERAGE", "Objective for coverage, e.g. COVERAGE, LENGTH, NUMBER"),
 
