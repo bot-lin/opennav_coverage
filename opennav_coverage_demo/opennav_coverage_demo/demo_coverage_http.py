@@ -24,6 +24,7 @@ from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Point32, Polygon
 from lifecycle_msgs.srv import GetState
 from opennav_coverage_msgs.action import NavigateCompleteCoverage
+from nav2_msgs.msg import BehaviorTreeLog
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
@@ -48,9 +49,21 @@ class CoverageNavigatorTester(Node):
         self.result_future = None
         self.status = None
         self.feedback = None
+        self.resume_required = False
+
+        self.create_subscription(BehaviorTreeLog, '/behavior_tree_log',
+                                 self.behavior_tree_log_callback, 10)
 
         self.coverage_client = ActionClient(self, NavigateCompleteCoverage,
                                             'navigate_complete_coverage')
+
+    def behavior_tree_log_callback(self, msg):
+        for log in msg.event_log:
+            if log.node_name == "Wait":
+                self.resume_required = True
+                break
+        self.resume_required = False
+
 
     def destroy_node(self):
         self.coverage_client.destroy()
@@ -259,6 +272,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     remaining_time = Duration.from_msg(self.feedback.estimated_time_remaining).nanoseconds / 1e9
                     return jsonify({
                         "status": status,
+                        "resume_required": self.resume_required,
                         "estimated_time_remaining": f"{remaining_time:.1f} 秒"
                     })
                 return jsonify({"status": status})
