@@ -61,7 +61,7 @@ class CoverageNavigatorTester(Node):
         for log in msg.event_log:
             if log.node_name == "Wait":
                 self.resume_required = True
-                break
+                return
         self.resume_required = False
 
 
