@@ -273,6 +273,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     return jsonify({
                         "status": status,
                         "resume_required": self.resume_required,
+                        "task_complete": False,
                         "estimated_time_remaining": f"{remaining_time:.1f} 秒"
                     })
                 return jsonify({"status": status})
@@ -345,7 +346,10 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             while not self.isTaskComplete():
                 feedback = self.getFeedback()
                 time.sleep(1)
-                
+            if self.cancel_required:
+                logging.info("取消请求已收到，停止导航任务。")
+                self.cancel_required = False
+
             logging.info(f"导航任务完成，结果: {self.getResult()}")
         
     def run_server(self, host='0.0.0.0', port=1235):  # 修改端口为1235
