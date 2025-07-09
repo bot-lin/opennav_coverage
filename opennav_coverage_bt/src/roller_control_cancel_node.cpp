@@ -32,19 +32,7 @@ RollerControlCancel::RollerControlCancel(
 
 }  // namespace nav2_behavior_tree
 
-#include "behaviortree_cpp_v3/bt_factory.h"
-BT_REGISTER_NODES(factory)
-{
-  BT::NodeBuilder builder =
-    [](const std::string & name, const BT::NodeConfiguration & config)
-    {
-      return std::make_unique<nav2_behavior_tree::RollerControlCancel>(
-        name, "custom_program_action", config);
-    };
 
-  factory.registerBuilder<nav2_behavior_tree::RollerControlCancel>(
-    "CancelRollerControl", builder);
-}
 
 #include "behaviortree_cpp/bt_factory.h"
 BT_REGISTER_NODES(factory)
