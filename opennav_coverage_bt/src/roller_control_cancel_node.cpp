@@ -17,7 +17,7 @@
 
 #include "std_msgs/msg/string.hpp"
 
-#include "nav2_behavior_tree/plugins/action/roller_control_cancel_node.hpp"
+#include "opennav_coverage_bt/roller_control_cancel_node.hpp"
 
 namespace nav2_behavior_tree
 {
