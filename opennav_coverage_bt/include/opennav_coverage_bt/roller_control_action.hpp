@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef NAV2_BEHAVIOR_TREE__PLUGINS__ACTION__ROLLER_CONTROL_ACTION_HPP_
-#define NAV2_BEHAVIOR_TREE__PLUGINS__ACTION__ROLLER_CONTROL_ACTION_HPP_
+#ifndef OPENNAV_COVERAGE_BT__ROLLER_CONTROL_ACTION_HPP_
+#define OPENNAV_COVERAGE_BT__ROLLER_CONTROL_ACTION_HPP_
 
 #include <string>
 #include <vector>
@@ -21,7 +21,7 @@
 #include "nav2_behavior_tree/bt_action_node.hpp"
 #include "zbot_interfaces/action/custom_program_action.hpp"
 
-namespace nav2_behavior_tree
+namespace opennav_coverage_bt
 {
 
 /**

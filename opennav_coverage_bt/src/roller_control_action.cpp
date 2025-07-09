@@ -17,7 +17,7 @@
 
 #include "opennav_coverage_bt/roller_control_action.hpp"
 
-namespace nav2_behavior_tree
+namespace opennav_coverage_bt
 {
 
 RollerControlAction::RollerControlAction(

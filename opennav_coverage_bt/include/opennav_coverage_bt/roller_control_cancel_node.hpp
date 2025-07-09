@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef NAV2_BEHAVIOR_TREE__PLUGINS__ROLLER__CONTROL_CANCEL_NODE_HPP_
-#define NAV2_BEHAVIOR_TREE__PLUGINS__ROLLER__CONTROL_CANCEL_NODE_HPP_
+#ifndef OPENNAV_COVERAGE_BT__CONTROL_CANCEL_NODE_HPP_
+#define OPENNAV_COVERAGE_BT__CONTROL_CANCEL_NODE_HPP_
 
 #include <memory>
 #include <string>
@@ -22,7 +22,7 @@
 
 #include "nav2_behavior_tree/bt_cancel_action_node.hpp"
 
-namespace nav2_behavior_tree
+namespace opennav_coverage_bt
 {
 
 /**
