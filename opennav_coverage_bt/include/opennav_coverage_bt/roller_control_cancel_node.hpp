@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#ifndef OPENNAV_COVERAGE_BT__CONTROL_CANCEL_NODE_HPP_
-#define OPENNAV_COVERAGE_BT__CONTROL_CANCEL_NODE_HPP_
+#ifndef OPENNAV_COVERAGE_BT__ROLLER_CONTROL_CANCEL_NODE_HPP_
+#define OPENNAV_COVERAGE_BT__ROLLER_CONTROL_CANCEL_NODE_HPP_
 
 #include <memory>
 #include <string>
@@ -28,7 +28,7 @@ namespace opennav_coverage_bt
 /**
  * @brief A nav2_behavior_tree::BtActionNode class that wraps nav2_msgs::action::Wait
  */
-class RollerControlCancel : public BtCancelActionNode<zbot_interfaces::action::CustomProgramAction>
+class RollerControlCancel : public nav2_behavior_tree::BtCancelActionNode<zbot_interfaces::action::CustomProgramAction>
 {
 public:
   /**

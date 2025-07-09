@@ -27,7 +27,7 @@ namespace opennav_coverage_bt
 /**
  * @brief A nav2_behavior_tree::BtActionNode class that wraps zbot_interfaces::action::RollerControl
  */
-class RollerControlAction : public BtActionNode<zbot_interfaces::action::CustomProgramAction>
+class RollerControlAction : public nav2_behavior_tree::BtActionNode<zbot_interfaces::action::CustomProgramAction>
 {
 public:
   /**
