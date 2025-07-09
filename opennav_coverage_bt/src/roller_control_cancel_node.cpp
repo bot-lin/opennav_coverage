@@ -45,5 +45,5 @@ BT_REGISTER_NODES(factory)
     };
 
   factory.registerBuilder<opennav_coverage_bt::RollerControlCancel>(
-    "CancelCoverage", builder);
+    "CancelRollerControl", builder);
 }
