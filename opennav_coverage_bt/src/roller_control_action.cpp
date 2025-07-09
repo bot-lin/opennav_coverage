@@ -15,7 +15,7 @@
 #include <string>
 #include <memory>
 
-#include "nav2_behavior_tree/plugins/action/roller_control_action.hpp"
+#include "opennav_coverage_bt/roller_control_action.hpp"
 
 namespace nav2_behavior_tree
 {
