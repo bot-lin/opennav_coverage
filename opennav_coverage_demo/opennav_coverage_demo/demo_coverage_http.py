@@ -18,6 +18,8 @@ import time
 import threading
 import json
 import logging
+import os
+import yaml
 from flask import Flask, request, jsonify, Response
 
 from action_msgs.msg import GoalStatus
@@ -182,6 +184,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
         self.repeat_times = 1
         self.current_repeat = 0
         self.cancel_required = False
+        self.config_file = None  # Will be set when needed
         self.setup_routes()
         
     def setup_routes(self):
@@ -329,6 +332,173 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     "code": 1, 
                     "error": f"服务器处理取消请求时发生错误: {str(e)}"
                 }), 500
+
+        # Simple robot parameter endpoints
+        @self.app.route('/robot_width', methods=['GET'])
+        def get_robot_width():
+            """获取机器人宽度"""
+            return self._get_parameter('robot_width')
+
+        @self.app.route('/robot_width', methods=['POST'])
+        def set_robot_width():
+            """设置机器人宽度"""
+            return self._set_parameter('robot_width')
+
+        @self.app.route('/operation_width', methods=['GET'])
+        def get_operation_width():
+            """获取作业宽度"""
+            return self._get_parameter('operation_width')
+
+        @self.app.route('/operation_width', methods=['POST'])
+        def set_operation_width():
+            """设置作业宽度"""
+            return self._set_parameter('operation_width')
+
+        @self.app.route('/min_turning_radius', methods=['GET'])
+        def get_min_turning_radius():
+            """获取最小转弯半径"""
+            return self._get_parameter('min_turning_radius')
+
+        @self.app.route('/min_turning_radius', methods=['POST'])
+        def set_min_turning_radius():
+            """设置最小转弯半径"""
+            return self._set_parameter('min_turning_radius')
+
+        @self.app.route('/headland_width', methods=['GET'])
+        def get_headland_width():
+            """获取地头宽度"""
+            return self._get_parameter('default_headland_width')
+
+        @self.app.route('/headland_width', methods=['POST'])
+        def set_headland_width():
+            """设置地头宽度"""
+            return self._set_parameter('default_headland_width')
+
+        @self.app.route('/swath_angle', methods=['GET'])
+        def get_swath_angle():
+            """获取扫描角度"""
+            return self._get_parameter('default_swath_angle')
+
+        @self.app.route('/swath_angle', methods=['POST'])
+        def set_swath_angle():
+            """设置扫描角度"""
+            return self._set_parameter('default_swath_angle')
+
+        @self.app.route('/allow_overlap', methods=['GET'])
+        def get_allow_overlap():
+            """获取是否允许重叠"""
+            return self._get_parameter('default_allow_overlap')
+
+        @self.app.route('/allow_overlap', methods=['POST'])
+        def set_allow_overlap():
+            """设置是否允许重叠"""
+            return self._set_parameter('default_allow_overlap')
+
+        @self.app.route('/config_file', methods=['POST'])
+        def set_config_file():
+            """设置配置文件路径"""
+            try:
+                if not request.is_json:
+                    return jsonify({"code": 1, "error": "请求必须是JSON格式"}), 400
+                
+                data = request.get_json()
+                file_path = data.get('file_path')
+                
+                if not file_path:
+                    return jsonify({"code": 1, "error": "缺少'file_path'字段"}), 400
+                
+                if not os.path.exists(file_path):
+                    return jsonify({"code": 1, "error": f"文件不存在: {file_path}"}), 404
+                
+                self.config_file = file_path
+                return jsonify({"code": 0, "message": "配置文件路径设置成功", "file_path": file_path})
+                
+            except Exception as e:
+                return jsonify({"code": 1, "error": f"设置配置文件时出错: {str(e)}"}), 500
+
+        # OPTIONS for all parameter endpoints
+        for param in ['robot_width', 'operation_width', 'min_turning_radius', 
+                      'headland_width', 'swath_angle', 'allow_overlap', 'config_file']:
+            @self.app.route(f'/{param}', methods=['OPTIONS'])
+            def handle_param_options():
+                response = Response()
+                response.headers.add("Access-Control-Allow-Origin", "*")
+                response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+                response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                return response
+
+    def _get_parameter(self, param_name):
+        """获取参数值的通用方法"""
+        try:
+            if not self.config_file:
+                return jsonify({"code": 1, "error": "请先设置配置文件路径"}), 400
+            
+            if not os.path.exists(self.config_file):
+                return jsonify({"code": 1, "error": f"配置文件不存在: {self.config_file}"}), 404
+            
+            with open(self.config_file, 'r', encoding='utf-8') as file:
+                config = yaml.safe_load(file)
+            
+            value = config.get('coverage_server', {}).get('ros__parameters', {}).get(param_name)
+            
+            if value is None:
+                return jsonify({"code": 1, "error": f"参数不存在: {param_name}"}), 404
+            
+            return jsonify({
+                "code": 0,
+                "parameter": param_name,
+                "value": value
+            })
+            
+        except Exception as e:
+            return jsonify({"code": 1, "error": f"获取参数时出错: {str(e)}"}), 500
+
+    def _set_parameter(self, param_name):
+        """设置参数值的通用方法"""
+        try:
+            if not self.config_file:
+                return jsonify({"code": 1, "error": "请先设置配置文件路径"}), 400
+            
+            if not request.is_json:
+                return jsonify({"code": 1, "error": "请求必须是JSON格式"}), 400
+            
+            data = request.get_json()
+            new_value = data.get('value')
+            
+            if new_value is None:
+                return jsonify({"code": 1, "error": "缺少'value'字段"}), 400
+            
+            if not os.path.exists(self.config_file):
+                return jsonify({"code": 1, "error": f"配置文件不存在: {self.config_file}"}), 404
+            
+            # 读取配置文件
+            with open(self.config_file, 'r', encoding='utf-8') as file:
+                config = yaml.safe_load(file) or {}
+            
+            # 确保结构存在
+            if 'coverage_server' not in config:
+                config['coverage_server'] = {}
+            if 'ros__parameters' not in config['coverage_server']:
+                config['coverage_server']['ros__parameters'] = {}
+            
+            # 设置新值
+            old_value = config['coverage_server']['ros__parameters'].get(param_name)
+            config['coverage_server']['ros__parameters'][param_name] = new_value
+            
+            # 写回文件
+            with open(self.config_file, 'w', encoding='utf-8') as file:
+                yaml.dump(config, file, default_flow_style=False, allow_unicode=True)
+            
+            return jsonify({
+                "code": 0,
+                "message": "参数更新成功",
+                "parameter": param_name,
+                "old_value": old_value,
+                "new_value": new_value
+            })
+            
+        except Exception as e:
+            return jsonify({"code": 1, "error": f"设置参数时出错: {str(e)}"}), 500
     
     def _run_navigation_task(self, field, swath_angle, repeat_times=1, mode='SET_ANGLE', objective='', step_angle=0.0):
         """在单独的线程中运行导航任务。"""
