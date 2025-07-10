@@ -184,7 +184,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
         self.repeat_times = 1
         self.current_repeat = 0
         self.cancel_required = False
-        self.config_file = None  # Will be set when needed
+        self.config_file = '/data/params/coverage_params.yaml'  # Will be set when needed
         self.setup_routes()
         
     def setup_routes(self):
