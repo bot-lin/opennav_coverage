@@ -417,15 +417,61 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 return jsonify({"code": 1, "error": f"设置配置文件时出错: {str(e)}"}), 500
 
         # OPTIONS for all parameter endpoints
-        for param in ['robot_width', 'operation_width', 'min_turning_radius', 
-                      'headland_width', 'swath_angle', 'allow_overlap', 'config_file']:
-            @self.app.route(f'/{param}', methods=['OPTIONS'])
-            def handle_param_options():
-                response = Response()
-                response.headers.add("Access-Control-Allow-Origin", "*")
-                response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-                response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-                return response
+        @self.app.route('/robot_width', methods=['OPTIONS'])
+        def handle_robot_width_options():
+            response = Response()
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            return response
+
+        @self.app.route('/operation_width', methods=['OPTIONS'])
+        def handle_operation_width_options():
+            response = Response()
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            return response
+
+        @self.app.route('/min_turning_radius', methods=['OPTIONS'])
+        def handle_min_turning_radius_options():
+            response = Response()
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            return response
+
+        @self.app.route('/headland_width', methods=['OPTIONS'])
+        def handle_headland_width_options():
+            response = Response()
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            return response
+
+        @self.app.route('/swath_angle', methods=['OPTIONS'])
+        def handle_swath_angle_options():
+            response = Response()
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            return response
+
+        @self.app.route('/allow_overlap', methods=['OPTIONS'])
+        def handle_allow_overlap_options():
+            response = Response()
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            return response
+
+        @self.app.route('/config_file', methods=['OPTIONS'])
+        def handle_config_file_options():
+            response = Response()
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+            response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+            return response
 
     def _get_parameter(self, param_name):
         """获取参数值的通用方法"""
