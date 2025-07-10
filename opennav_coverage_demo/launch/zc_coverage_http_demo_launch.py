@@ -35,7 +35,7 @@ def generate_launch_description():
     sim_dir = get_package_share_directory('nav2_minimal_tb3_sim')
 
     world = os.path.join(coverage_demo_dir, 'blank.world')
-    param_file_path = os.path.join(coverage_demo_dir, 'demo_params.yaml')
+    param_file_path = os.path.join('/data/params', 'coverage_params.yaml')
     robot_sdf = os.path.join(sim_dir, 'urdf', 'gz_waffle.sdf.xacro')
 
     # start the simulation
