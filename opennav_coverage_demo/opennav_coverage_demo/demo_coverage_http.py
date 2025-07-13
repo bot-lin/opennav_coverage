@@ -32,6 +32,12 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 import math
+
+import cv2
+import numpy as np
+from nav2_msgs.srv import GetCostmap
+from nav2_msgs.msg import Costmap
+
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -58,6 +64,321 @@ class CoverageNavigatorTester(Node):
 
         self.coverage_client = ActionClient(self, NavigateCompleteCoverage,
                                             'navigate_complete_coverage')
+        self.get_logger().info('Waiting for global costmap message...')
+        self.get_costmap_client = self.create_client(GetCostmap, '/global_costmap/get_costmap')
+        while not self.get_costmap_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().info('Waiting for GetCostmap service...')
+
+    def call_get_costmap_service(self):
+        try:
+            # Create service request
+            request = GetCostmap.Request()
+            # Note: specs field can be left empty for default behavior
+            
+            # Call service asynchronously
+            future = self.get_costmap_client.call_async(request)
+            
+            # Wait for response
+            rclpy.spin_until_future_complete(self, future)
+            
+            if future.result() is not None:
+                costmap_response = future.result()
+                free_contours_world = self.process_costmap(costmap_response.map)
+                return free_contours_world[0]['world_coordinates']
+            else:
+                self.get_logger().error('Service call failed')
+                return None
+                
+        except Exception as e:
+            self.get_logger().error(f'Error calling service: {str(e)}')
+
+    def pixel_to_world(self, pixel_x, pixel_y, resolution, origin_x, origin_y):
+        """
+        Convert pixel coordinates to world coordinates
+        
+        Args:
+            pixel_x: Column in image (x-axis in image coordinates)
+            pixel_y: Row in image (y-axis in image coordinates)
+            resolution: Meters per pixel
+            origin_x: World X coordinate of pixel (0,0)
+            origin_y: World Y coordinate of pixel (0,0)
+            
+        Returns:
+            (world_x, world_y): World coordinates in meters
+        """
+        world_x = origin_x + (pixel_x * resolution)
+        world_y = origin_y + (pixel_y * resolution)
+        return world_x, world_y
+
+    def convert_contour_to_world(self, contour, resolution, origin_x, origin_y):
+        """
+        Convert a single contour from pixel coordinates to world coordinates
+        
+        Args:
+            contour: OpenCV contour in pixel coordinates
+            resolution: Meters per pixel
+            origin_x, origin_y: World coordinates of pixel (0,0)
+            
+        Returns:
+            world_contour: List of (x, y) tuples in world coordinates
+        """
+        world_contour = []
+        for point in contour:
+            pixel_x, pixel_y = point[0][0], point[0][1]  # OpenCV contour format
+            world_x, world_y = self.pixel_to_world(pixel_x, pixel_y, resolution, origin_x, origin_y)
+            world_contour.append([world_x, world_y])
+        return world_contour
+
+    def process_costmap(self, msg: Costmap):
+        try:
+            # Convert Costmap data to numpy array
+            # Note: Costmap uses uint8 (0-255) instead of int8 (-128 to 127)
+            data = np.array(msg.data, dtype=np.uint8).reshape((msg.metadata.size_y, msg.metadata.size_x))
+            
+            # Extract metadata for coordinate conversion
+            resolution = msg.metadata.resolution
+            origin_x = msg.metadata.origin.position.x
+            origin_y = msg.metadata.origin.position.y
+            
+            self.get_logger().info(f'Costmap size: {msg.metadata.size_x} x {msg.metadata.size_y}')
+            self.get_logger().info(f'Costmap resolution: {resolution} m/cell')
+            self.get_logger().info(f'Costmap origin: ({origin_x}, {origin_y}) meters')
+
+            # Create a uint8 image for visualization
+            # Costmap values: 0 (free) -> 255 (occupied), so we need to invert for visualization
+            image = np.zeros_like(data, dtype=np.uint8)
+            
+            # For costmap: 0 = free, 255 = occupied
+            # For visualization: 0 = black (occupied), 255 = white (free)
+            image = 255 - data  # Invert the costmap for better visualization
+            
+            # Alternative: Create a more detailed mapping if needed
+            # image = np.zeros_like(data, dtype=np.uint8)
+            # image[data == 0] = 255      # Free space -> white
+            # image[data == 255] = 0      # Occupied -> black
+            # image[(data > 0) & (data < 255)] = 255 - data[(data > 0) & (data < 255)]  # Interpolate
+
+            # Save original costmap
+            filename = 'global_costmap.png'
+            cv2.imwrite(filename, image)
+            self.get_logger().info(f'Saved costmap to {filename}')
+
+            # Create better binary images for polygon detection
+            # For costmap data (0-255), we need different thresholds
+            
+            # Free space: cells with low cost (0-50)
+            free_space_binary = np.zeros_like(data, dtype=np.uint8)
+            free_space_binary[data <= 50] = 255
+            
+            # Navigable space: cells with cost <= 100
+            navigable_binary = np.zeros_like(data, dtype=np.uint8)
+            navigable_binary[data <= 100] = 255
+            
+            # Obstacle boundaries: cells with cost >= 200
+            obstacle_binary = np.zeros_like(data, dtype=np.uint8)
+            obstacle_binary[data >= 200] = 255
+            
+            # Occupied space: cells with cost >= 250 (nearly occupied)
+            occupied_binary = np.zeros_like(data, dtype=np.uint8)
+            occupied_binary[data >= 250] = 255
+            
+            # Apply morphological operations to clean up the binary images
+            kernel = np.ones((3,3), np.uint8)
+            free_space_binary = cv2.morphologyEx(free_space_binary, cv2.MORPH_CLOSE, kernel)
+            navigable_binary = cv2.morphologyEx(navigable_binary, cv2.MORPH_CLOSE, kernel)
+            obstacle_binary = cv2.morphologyEx(obstacle_binary, cv2.MORPH_CLOSE, kernel)
+            occupied_binary = cv2.morphologyEx(occupied_binary, cv2.MORPH_CLOSE, kernel)
+            
+            # Create a colored image for polygon visualization
+            polygon_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            
+            # Find and draw contours with different parameters for better fitting
+            
+            # 1. Free space polygons (low cost areas) with index labels
+            free_contours, _ = cv2.findContours(free_space_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Convert free contours to world coordinates
+            free_contours_world = []
+            free_contour_index = 0
+            
+            for contour in free_contours:
+                if cv2.contourArea(contour) > 700:  # Reduced threshold
+                    # Convert contour to world coordinates
+                    world_contour = self.convert_contour_to_world(contour, resolution, origin_x, origin_y)
+                    free_contours_world.append({
+                        'index': free_contour_index,
+                        'area_pixels': cv2.contourArea(contour),
+                        'area_meters_squared': cv2.contourArea(contour) * (resolution ** 2),
+                        'pixel_coordinates': contour.tolist(),
+                        'world_coordinates': world_contour
+                    })
+                    
+                    # Use more precise approximation for visualization
+                    epsilon = 0.005 * cv2.arcLength(contour, True)  # Much more precise
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    cv2.drawContours(polygon_image, [approx], -1, (0, 255, 0), 1)  # Green, thinner line
+                    
+                    # Calculate centroid for text placement
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        
+                        # Convert centroid to world coordinates
+                        world_cx, world_cy = self.pixel_to_world(cx, cy, resolution, origin_x, origin_y)
+                        
+                        # Draw index number at centroid
+                        cv2.putText(polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)  # White text with border
+                        cv2.putText(polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 1)  # Black text
+                        
+                        # Log information about this contour
+                        self.get_logger().info(f'Free contour {free_contour_index}: '
+                                             f'Area={cv2.contourArea(contour):.1f} pixels '
+                                             f'({cv2.contourArea(contour) * (resolution ** 2):.2f} m²), '
+                                             f'Centroid=({world_cx:.2f}, {world_cy:.2f}) m')
+                        
+                        free_contour_index += 1
+            
+            # Save free contours as JSON file with world coordinates
+            with open('free_contours_world_coordinates.json', 'w') as f:
+                json.dump(free_contours_world, f, indent=2)
+            self.get_logger().info(f'Saved {len(free_contours_world)} free contours with world coordinates to free_contours_world_coordinates.json')
+            
+            # 2. Navigable space polygons (broader navigable area)
+            navigable_contours, _ = cv2.findContours(navigable_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in navigable_contours:
+                if cv2.contourArea(contour) > 100:
+                    epsilon = 0.008 * cv2.arcLength(contour, True)
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    cv2.drawContours(polygon_image, [approx], -1, (0, 255, 255), 1)  # Yellow
+            
+            # 3. Obstacle boundaries
+            obstacle_contours, _ = cv2.findContours(obstacle_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in obstacle_contours:
+                if cv2.contourArea(contour) > 25:  # Even smaller threshold for obstacles
+                    epsilon = 0.005 * cv2.arcLength(contour, True)
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    cv2.drawContours(polygon_image, [approx], -1, (0, 0, 255), 1)  # Red
+            
+            # 4. Occupied space polygons (high cost areas)
+            occupied_contours, _ = cv2.findContours(occupied_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in occupied_contours:
+                if cv2.contourArea(contour) > 10:  # Very small threshold for precise obstacles
+                    epsilon = 0.003 * cv2.arcLength(contour, True)  # Most precise
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    cv2.drawContours(polygon_image, [approx], -1, (255, 0, 0), 2)  # Blue, thicker line
+            
+            # Save polygon image
+            polygon_filename = 'global_costmap_polygons.png'
+            cv2.imwrite(polygon_filename, polygon_image)
+            self.get_logger().info(f'Saved polygon visualization to {polygon_filename}')
+            
+            # Create a detailed version with just the most important polygons and indexed free contours
+            detailed_polygon_image = np.ones_like(polygon_image) * 255  # White background
+            
+            # Draw only the most precise contours with indices
+            free_contour_index = 0
+            for contour in free_contours:
+                if cv2.contourArea(contour) > 700:
+                    # Use the original contour points for maximum precision
+                    cv2.drawContours(detailed_polygon_image, [contour], -1, (0, 200, 0), 2)
+                    
+                    # Calculate centroid for text placement
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        
+                        # Draw index number at centroid (larger font for white background)
+                        cv2.putText(detailed_polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 0, 0), 3)  # Red text with thick border
+                        cv2.putText(detailed_polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 2)  # Black text
+                        
+                        free_contour_index += 1
+            
+            for contour in occupied_contours:
+                if cv2.contourArea(contour) > 25:
+                    cv2.drawContours(detailed_polygon_image, [contour], -1, (0, 0, 200), 1)
+            
+            detailed_filename = 'global_costmap_detailed_polygons.png'
+            cv2.imwrite(detailed_filename, detailed_polygon_image)
+            self.get_logger().info(f'Saved detailed polygon visualization to {detailed_filename}')
+            
+            # Create a version with original contours (no approximation) with indices
+            precise_polygon_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            
+            # Draw exact contours without approximation
+            cv2.drawContours(precise_polygon_image, free_contours, -1, (0, 255, 0), 1)
+            cv2.drawContours(precise_polygon_image, occupied_contours, -1, (0, 0, 255), 1)
+            
+            # Add indices to free contours
+            free_contour_index = 0
+            for contour in free_contours:
+                if cv2.contourArea(contour) > 50:
+                    # Calculate centroid for text placement
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        
+                        # Draw index number at centroid
+                        cv2.putText(precise_polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)  # White text with border
+                        cv2.putText(precise_polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)  # Black text
+                        
+                        free_contour_index += 1
+            
+            precise_filename = 'global_costmap_precise_contours.png'
+            cv2.imwrite(precise_filename, precise_polygon_image)
+            self.get_logger().info(f'Saved precise contour visualization to {precise_filename}')
+            
+            # Create a special version with ONLY indexed free contours for clarity
+            indexed_free_image = np.ones_like(polygon_image) * 255  # White background
+            
+            free_contour_index = 0
+            for contour in free_contours:
+                if cv2.contourArea(contour) > 50:
+                    # Draw contour in green
+                    cv2.drawContours(indexed_free_image, [contour], -1, (0, 180, 0), 2)
+                    
+                    # Calculate centroid for text placement
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        
+                        # Draw index number at centroid (large, clear text)
+                        cv2.putText(indexed_free_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)  # Red text with thick border
+                        cv2.putText(indexed_free_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 2)  # White text
+                        
+                        free_contour_index += 1
+            
+            indexed_filename = 'global_costmap_indexed_free_contours.png'
+            cv2.imwrite(indexed_filename, indexed_free_image)
+            self.get_logger().info(f'Saved indexed free contours to {indexed_filename}')
+            
+            # Log detailed statistics
+            self.get_logger().info(f'Found {len(free_contours)} free space regions')
+            self.get_logger().info(f'Found {len(navigable_contours)} navigable regions')
+            self.get_logger().info(f'Found {len(obstacle_contours)} obstacle boundary regions')
+            self.get_logger().info(f'Found {len(occupied_contours)} occupied regions')
+            
+            # Log unique costmap values for debugging
+            unique_values = np.unique(data)
+            self.get_logger().info(f'Unique costmap values: {unique_values}')
+            
+        except Exception as e:
+            self.get_logger().error(f'Error processing costmap: {str(e)}')
+        return free_contours_world
+
+
+
 
     def behavior_tree_log_callback(self, msg):
         for log in msg.event_log:
@@ -204,7 +525,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 if 'field' not in data:
                     return jsonify({"code": 1,"error": "缺少'field'字段"}), 400
                     
-                field = data['field']
+                # field = data['field']
+                field = self.call_get_costmap_service()
                 if not isinstance(field, list) or len(field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
                 
