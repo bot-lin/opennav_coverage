@@ -527,6 +527,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     
                 # field = data['field']
                 field = self.call_get_costmap_service()
+                field.append(field[0])
                 if not isinstance(field, list) or len(field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
                 
