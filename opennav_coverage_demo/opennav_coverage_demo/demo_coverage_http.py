@@ -83,10 +83,8 @@ class CoverageNavigatorTester(Node):
             
             if future.result() is not None:
                 costmap_response = future.result()
-                # Still process costmap for debugging/visualization
-                self.process_costmap(costmap_response.map)
-                # Return the raw costmap message for field analysis
-                return costmap_response.map
+                free_contours_world = self.process_costmap(costmap_response.map)
+                return free_contours_world
             else:
                 self.get_logger().error('Service call failed')
                 return None
@@ -400,114 +398,52 @@ class CoverageNavigatorTester(Node):
         
         return inside
 
-    def find_free_space_within_field(self, field_polygon, costmap_msg):
+    def find_biggest_polygon_within_field(self, field_polygon, free_contours_world):
         """
-        Analyze the costmap within the given field polygon and extract the largest free navigable area.
+        Find the biggest free space polygon that is completely within the given field polygon.
         
         Args:
             field_polygon: List of [x, y] coordinates defining the field boundary
-            costmap_msg: Costmap message from ROS
+            free_contours_world: List of free contour dictionaries from costmap
             
         Returns:
-            List of [x, y] coordinates of the biggest free space polygon within the field, or None if none found
+            List of [x, y] coordinates of the biggest polygon within the field, or None if none found
         """
         try:
-            if not field_polygon or not costmap_msg:
-                self.get_logger().warn('No field polygon or costmap provided')
+            if not free_contours_world or not field_polygon:
+                self.get_logger().warn('No free contours or field polygon provided')
                 return None
             
-            self.get_logger().info(f'Analyzing costmap within field polygon: {field_polygon}')
+            biggest_polygon = None
+            biggest_area = 0
             
-            # Extract costmap data
-            data = np.array(costmap_msg.data, dtype=np.uint8).reshape((costmap_msg.metadata.size_y, costmap_msg.metadata.size_x))
-            resolution = costmap_msg.metadata.resolution
-            origin_x = costmap_msg.metadata.origin.position.x
-            origin_y = costmap_msg.metadata.origin.position.y
+            self.get_logger().info(f'Checking {len(free_contours_world)} free contours against field polygon')
             
-            self.get_logger().info(f'Costmap resolution: {resolution} m/cell, origin: ({origin_x}, {origin_y})')
-            
-            # Convert field polygon to pixel coordinates
-            field_pixels = []
-            for point in field_polygon:
-                pixel_x = int((point[0] - origin_x) / resolution)
-                pixel_y = int((point[1] - origin_y) / resolution)
-                field_pixels.append([pixel_x, pixel_y])
-            
-            self.get_logger().info(f'Field polygon in pixels: {field_pixels}')
-            
-            # Create a mask for the field polygon
-            mask = np.zeros((costmap_msg.metadata.size_y, costmap_msg.metadata.size_x), dtype=np.uint8)
-            field_contour = np.array(field_pixels, dtype=np.int32)
-            cv2.fillPoly(mask, [field_contour], 255)
-            
-            # Create binary image of free space within the field
-            free_space_binary = np.zeros_like(data, dtype=np.uint8)
-            free_space_binary[data <= 50] = 255  # Free space: cost <= 50
-            
-            # Apply field mask to only consider areas within the field
-            masked_free_space = cv2.bitwise_and(free_space_binary, mask)
-            
-            # Clean up the binary image
-            kernel = np.ones((3,3), np.uint8)
-            masked_free_space = cv2.morphologyEx(masked_free_space, cv2.MORPH_CLOSE, kernel)
-            masked_free_space = cv2.morphologyEx(masked_free_space, cv2.MORPH_OPEN, kernel)
-            
-            # Find contours in the masked free space
-            contours, _ = cv2.findContours(masked_free_space, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if not contours:
-                self.get_logger().warn('No free space contours found within the field polygon')
-                return None
-            
-            # Find the largest contour
-            largest_contour = None
-            largest_area = 0
-            
-            for contour in contours:
-                area_pixels = cv2.contourArea(contour)
-                area_meters = area_pixels * (resolution ** 2)
+            for contour_info in free_contours_world:
+                world_contour = contour_info['world_coordinates']
+                area_meters = contour_info['area_meters_squared']
                 
-                if area_meters > largest_area and area_pixels > 100:  # Minimum size threshold
-                    largest_area = area_meters
-                    largest_contour = contour
+                # Check if this contour is completely within the field polygon
+                all_points_inside = True
+                for point in world_contour:
+                    if not self.point_in_polygon(point, field_polygon):
+                        all_points_inside = False
+                        break
+                
+                if all_points_inside and area_meters > biggest_area:
+                    biggest_area = area_meters
+                    biggest_polygon = world_contour
+                    self.get_logger().info(f'Found bigger polygon with area {area_meters:.2f} m²')
             
-            if largest_contour is None:
-                self.get_logger().warn('No sufficiently large free space found within the field')
+            if biggest_polygon:
+                self.get_logger().info(f'Selected biggest polygon with area {biggest_area:.2f} m²')
+                return biggest_polygon
+            else:
+                self.get_logger().warn('No free space polygons found completely within the field')
                 return None
-            
-            # Convert the largest contour back to world coordinates
-            world_polygon = []
-            for point in largest_contour:
-                pixel_x, pixel_y = point[0][0], point[0][1]
-                world_x = origin_x + (pixel_x * resolution)
-                world_y = origin_y + (pixel_y * resolution)
-                world_polygon.append([world_x, world_y])
-            
-            # Simplify the polygon to reduce number of points
-            epsilon = 0.01 * cv2.arcLength(largest_contour, True)
-            simplified_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
-            
-            simplified_world_polygon = []
-            for point in simplified_contour:
-                pixel_x, pixel_y = point[0][0], point[0][1]
-                world_x = origin_x + (pixel_x * resolution)
-                world_y = origin_y + (pixel_y * resolution)
-                simplified_world_polygon.append([world_x, world_y])
-            
-            self.get_logger().info(f'Found free space within field: area={largest_area:.2f} m², points={len(simplified_world_polygon)}')
-            self.get_logger().info(f'Free space polygon: {simplified_world_polygon[:5]}...')  # First 5 points
-            
-            # Save debug image
-            debug_image = cv2.cvtColor(masked_free_space, cv2.COLOR_GRAY2BGR)
-            cv2.drawContours(debug_image, [largest_contour], -1, (0, 255, 0), 2)
-            cv2.drawContours(debug_image, [field_contour], -1, (255, 0, 0), 2)
-            cv2.imwrite('field_free_space_analysis.png', debug_image)
-            self.get_logger().info('Saved debug image: field_free_space_analysis.png')
-            
-            return simplified_world_polygon
-            
+                
         except Exception as e:
-            self.get_logger().error(f'Error analyzing free space within field: {str(e)}')
+            self.get_logger().error(f'Error finding biggest polygon within field: {str(e)}')
             return None
 
 
@@ -662,13 +598,13 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 if not isinstance(user_field, list) or len(user_field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
                 
-                # Get costmap data
-                costmap_msg = self.call_get_costmap_service()
-                if not costmap_msg:
+                # Get free contours from costmap
+                free_contours_world = self.call_get_costmap_service()
+                if not free_contours_world:
                     return jsonify({"code": 1,"error": "无法获取全局代价地图数据"}), 500
                 
-                # Find the free space within the user's field
-                biggest_polygon = self.find_free_space_within_field(user_field, costmap_msg)
+                # Find the biggest polygon within the user's field
+                biggest_polygon = self.find_biggest_polygon_within_field(user_field, free_contours_world)
                 if not biggest_polygon:
                     return jsonify({"code": 1,"error": "在指定区域内未找到可用的自由空间多边形"}), 404
                 
