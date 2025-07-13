@@ -84,13 +84,14 @@ class CoverageNavigatorTester(Node):
             if future.result() is not None:
                 costmap_response = future.result()
                 free_contours_world = self.process_costmap(costmap_response.map)
-                return free_contours_world[0]['world_coordinates']
+                return free_contours_world
             else:
                 self.get_logger().error('Service call failed')
                 return None
                 
         except Exception as e:
             self.get_logger().error(f'Error calling service: {str(e)}')
+            return None
 
     def pixel_to_world(self, pixel_x, pixel_y, resolution, origin_x, origin_y):
         """
@@ -377,6 +378,74 @@ class CoverageNavigatorTester(Node):
             self.get_logger().error(f'Error processing costmap: {str(e)}')
         return free_contours_world
 
+    def point_in_polygon(self, point, polygon):
+        """Check if a point is inside a polygon using ray casting algorithm."""
+        x, y = point
+        n = len(polygon)
+        inside = False
+        
+        p1x, p1y = polygon[0]
+        for i in range(1, n + 1):
+            p2x, p2y = polygon[i % n]
+            if y > min(p1y, p2y):
+                if y <= max(p1y, p2y):
+                    if x <= max(p1x, p2x):
+                        if p1y != p2y:
+                            xinters = (y - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                        if p1x == p2x or x <= xinters:
+                            inside = not inside
+            p1x, p1y = p2x, p2y
+        
+        return inside
+
+    def find_biggest_polygon_within_field(self, field_polygon, free_contours_world):
+        """
+        Find the biggest free space polygon that is completely within the given field polygon.
+        
+        Args:
+            field_polygon: List of [x, y] coordinates defining the field boundary
+            free_contours_world: List of free contour dictionaries from costmap
+            
+        Returns:
+            List of [x, y] coordinates of the biggest polygon within the field, or None if none found
+        """
+        try:
+            if not free_contours_world or not field_polygon:
+                self.get_logger().warn('No free contours or field polygon provided')
+                return None
+            
+            biggest_polygon = None
+            biggest_area = 0
+            
+            self.get_logger().info(f'Checking {len(free_contours_world)} free contours against field polygon')
+            
+            for contour_info in free_contours_world:
+                world_contour = contour_info['world_coordinates']
+                area_meters = contour_info['area_meters_squared']
+                
+                # Check if this contour is completely within the field polygon
+                all_points_inside = True
+                for point in world_contour:
+                    if not self.point_in_polygon(point, field_polygon):
+                        all_points_inside = False
+                        break
+                
+                if all_points_inside and area_meters > biggest_area:
+                    biggest_area = area_meters
+                    biggest_polygon = world_contour
+                    self.get_logger().info(f'Found bigger polygon with area {area_meters:.2f} m²')
+            
+            if biggest_polygon:
+                self.get_logger().info(f'Selected biggest polygon with area {biggest_area:.2f} m²')
+                return biggest_polygon
+            else:
+                self.get_logger().warn('No free space polygons found completely within the field')
+                return None
+                
+        except Exception as e:
+            self.get_logger().error(f'Error finding biggest polygon within field: {str(e)}')
+            return None
+
 
 
 
@@ -489,7 +558,7 @@ class CoverageNavigatorTester(Node):
     def cancelTask(self):
         """Cancel pending task request of any type."""
         self.get_logger().info('Canceling current task.')
-        if self.result_future:
+        if self.result_future and self.goal_handle:
             future = self.goal_handle.cancel_goal_async()
             rclpy.spin_until_future_complete(self, future)
         return True
@@ -525,11 +594,26 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 if 'field' not in data:
                     return jsonify({"code": 1,"error": "缺少'field'字段"}), 400
                     
-                # field = data['field']
-                field = self.call_get_costmap_service()
-                field.append(field[0])
-                if not isinstance(field, list) or len(field) < 3:
+                user_field = data['field']
+                if not isinstance(user_field, list) or len(user_field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
+                
+                # Get free contours from costmap
+                free_contours_world = self.call_get_costmap_service()
+                if not free_contours_world:
+                    return jsonify({"code": 1,"error": "无法获取全局代价地图数据"}), 500
+                
+                # Find the biggest polygon within the user's field
+                biggest_polygon = self.find_biggest_polygon_within_field(user_field, free_contours_world)
+                if not biggest_polygon:
+                    return jsonify({"code": 1,"error": "在指定区域内未找到可用的自由空间多边形"}), 404
+                
+                # Use the biggest polygon for coverage planning
+                field = biggest_polygon
+                
+                # Ensure the polygon is closed (first point equals last point)
+                if field[0] != field[-1]:
+                    field.append(field[0])
                 
                 if "mode" in data:
                     mode = data['mode']
