@@ -66,6 +66,7 @@ class CoverageNavigatorTester(Node):
                                             'navigate_complete_coverage')
         self.get_logger().info('Waiting for global costmap message...')
         self.get_costmap_client = self.create_client(GetCostmap, '/global_costmap/get_costmap')
+        self.current_costmap = None  # Initialize costmap storage
         while not self.get_costmap_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for GetCostmap service...')
 
@@ -83,6 +84,8 @@ class CoverageNavigatorTester(Node):
             
             if future.result() is not None:
                 costmap_response = future.result()
+                # Store the costmap for later use
+                self.current_costmap = costmap_response.map
                 free_contours_world = self.process_costmap(costmap_response.map)
                 return free_contours_world[0]['world_coordinates']
             else:
@@ -91,6 +94,7 @@ class CoverageNavigatorTester(Node):
                 
         except Exception as e:
             self.get_logger().error(f'Error calling service: {str(e)}')
+            return None
 
     def pixel_to_world(self, pixel_x, pixel_y, resolution, origin_x, origin_y):
         """
@@ -377,6 +381,115 @@ class CoverageNavigatorTester(Node):
             self.get_logger().error(f'Error processing costmap: {str(e)}')
         return free_contours_world
 
+    def crop_and_find_free_space(self, user_polygon):
+        """
+        Crop the global costmap to the user's polygon and find the largest free space within it.
+        
+        Args:
+            user_polygon: List of [x, y] coordinates defining the field boundary
+            
+        Returns:
+            List of [x, y] coordinates of the largest free space polygon within the field, or None if none found
+        """
+        try:
+            if not hasattr(self, 'current_costmap') or not self.current_costmap:
+                self.get_logger().error('No costmap available. Call get costmap service first.')
+                return None
+            
+            if not user_polygon or len(user_polygon) < 3:
+                self.get_logger().error('Invalid user polygon provided')
+                return None
+            
+            costmap_msg = self.current_costmap
+            self.get_logger().info(f'Cropping costmap to user polygon: {user_polygon}')
+            
+            # Extract costmap data
+            data = np.array(costmap_msg.data, dtype=np.uint8).reshape((costmap_msg.metadata.size_y, costmap_msg.metadata.size_x))
+            resolution = costmap_msg.metadata.resolution
+            origin_x = costmap_msg.metadata.origin.position.x
+            origin_y = costmap_msg.metadata.origin.position.y
+            
+            self.get_logger().info(f'Costmap resolution: {resolution} m/cell, origin: ({origin_x}, {origin_y})')
+            
+            # Convert user polygon to pixel coordinates
+            user_polygon_pixels = []
+            for point in user_polygon:
+                pixel_x = int((point[0] - origin_x) / resolution)
+                pixel_y = int((point[1] - origin_y) / resolution)
+                # Clamp to valid pixel range
+                pixel_x = max(0, min(pixel_x, costmap_msg.metadata.size_x - 1))
+                pixel_y = max(0, min(pixel_y, costmap_msg.metadata.size_y - 1))
+                user_polygon_pixels.append([pixel_x, pixel_y])
+            
+            self.get_logger().info(f'User polygon in pixels: {user_polygon_pixels}')
+            
+            # Create a mask for the user polygon
+            mask = np.zeros((costmap_msg.metadata.size_y, costmap_msg.metadata.size_x), dtype=np.uint8)
+            polygon_contour = np.array(user_polygon_pixels, dtype=np.int32)
+            cv2.fillPoly(mask, [polygon_contour], 255)
+            
+            # Create binary image of free space (cost <= 50)
+            free_space_binary = np.zeros_like(data, dtype=np.uint8)
+            free_space_binary[data <= 50] = 255
+            
+            # Apply user polygon mask to only consider areas within the polygon
+            cropped_free_space = cv2.bitwise_and(free_space_binary, mask)
+            
+            # Clean up the binary image
+            kernel = np.ones((3,3), np.uint8)
+            cropped_free_space = cv2.morphologyEx(cropped_free_space, cv2.MORPH_CLOSE, kernel)
+            cropped_free_space = cv2.morphologyEx(cropped_free_space, cv2.MORPH_OPEN, kernel)
+            
+            # Find contours in the cropped free space
+            contours, _ = cv2.findContours(cropped_free_space, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if not contours:
+                self.get_logger().warn('No free space contours found within the user polygon')
+                return None
+            
+            # Find the largest contour
+            largest_contour = None
+            largest_area_pixels = 0
+            
+            for contour in contours:
+                area_pixels = cv2.contourArea(contour)
+                if area_pixels > largest_area_pixels and area_pixels > 100:  # Minimum size threshold
+                    largest_area_pixels = area_pixels
+                    largest_contour = contour
+            
+            if largest_contour is None:
+                self.get_logger().warn('No sufficiently large free space found within the user polygon')
+                return None
+            
+            # Simplify the polygon to reduce number of points
+            epsilon = 0.01 * cv2.arcLength(largest_contour, True)
+            simplified_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
+            
+            # Convert the simplified contour back to world coordinates
+            world_polygon = []
+            for point in simplified_contour:
+                pixel_x, pixel_y = point[0][0], point[0][1]
+                world_x = origin_x + (pixel_x * resolution)
+                world_y = origin_y + (pixel_y * resolution)
+                world_polygon.append([world_x, world_y])
+            
+            largest_area_meters = largest_area_pixels * (resolution ** 2)
+            self.get_logger().info(f'Found largest free space: area={largest_area_meters:.2f} m², points={len(world_polygon)}')
+            self.get_logger().info(f'Free space polygon: {world_polygon[:5]}...')  # First 5 points
+            
+            # Save debug image
+            debug_image = cv2.cvtColor(cropped_free_space, cv2.COLOR_GRAY2BGR)
+            cv2.drawContours(debug_image, [largest_contour], -1, (0, 255, 0), 2)  # Green for free space
+            cv2.drawContours(debug_image, [polygon_contour], -1, (255, 0, 0), 2)  # Blue for user polygon
+            cv2.imwrite('cropped_costmap_analysis.png', debug_image)
+            self.get_logger().info('Saved debug image: cropped_costmap_analysis.png')
+            
+            return world_polygon
+            
+        except Exception as e:
+            self.get_logger().error(f'Error cropping costmap and finding free space: {str(e)}')
+            return None
+
 
 
 
@@ -525,11 +638,21 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 if 'field' not in data:
                     return jsonify({"code": 1,"error": "缺少'field'字段"}), 400
                     
-                # field = data['field']
-                field = self.call_get_costmap_service()
-                field.append(field[0])
-                if not isinstance(field, list) or len(field) < 3:
+                user_field = data['field']
+                if not isinstance(user_field, list) or len(user_field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
+                
+                # First get the costmap to store it
+                _ = self.call_get_costmap_service()
+                
+                # Crop the costmap to user's polygon and find the largest free space within it
+                field = self.crop_and_find_free_space(user_field)
+                if not field:
+                    return jsonify({"code": 1,"error": "在用户指定区域内未找到可用的自由空间"}), 404
+                
+                # Ensure the polygon is closed (first point equals last point)
+                if field[0] != field[-1]:
+                    field.append(field[0])
                 
                 if "mode" in data:
                     mode = data['mode']
