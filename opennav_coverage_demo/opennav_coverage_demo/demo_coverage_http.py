@@ -642,11 +642,17 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 if not isinstance(user_field, list) or len(user_field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
                 
-                # First get the costmap to store it
-                _ = self.call_get_costmap_service()
+                use_user_field = True
+                if 'use_user_field' in data:
+                    use_user_field = data['use_user_field']
+                if use_user_field:
+                    field = user_field
+                else:
+                    # First get the costmap to store it
+                    _ = self.call_get_costmap_service()
+                    # Crop the costmap to user's polygon and find the largest free space within it
+                    field = self.crop_and_find_free_space(user_field)
                 
-                # Crop the costmap to user's polygon and find the largest free space within it
-                field = self.crop_and_find_free_space(user_field)
                 if not field:
                     return jsonify({"code": 1,"error": "在用户指定区域内未找到可用的自由空间"}), 404
                 
