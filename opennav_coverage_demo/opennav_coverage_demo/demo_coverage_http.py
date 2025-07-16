@@ -1044,16 +1044,12 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             
             if future.result() is not None:
                 response = future.result()
-                if response.results and len(response.results) > 0:
-                    result = response.results[0]
-                    if result.successful:
-                        self.get_logger().info(f"Successfully updated ROS2 parameter '{param_name}' to {value}")
-                        return True
-                    else:
-                        self.get_logger().error(f"Failed to update ROS2 parameter '{param_name}': {result.reason}")
-                        return False
+                result = response.result
+                if result.successful:
+                    self.get_logger().info(f"Successfully updated ROS2 parameter '{param_name}' to {value}")
+                    return True
                 else:
-                    self.get_logger().error(f"No results in parameter service response")
+                    self.get_logger().error(f"Failed to update ROS2 parameter '{param_name}': {result.reason}")
                     return False
             else:
                 self.get_logger().error(f"Parameter service call timed out for '{param_name}'")
