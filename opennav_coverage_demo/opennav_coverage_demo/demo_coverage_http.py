@@ -31,6 +31,9 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
+from rclpy.parameter import Parameter
+from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.msg import ParameterValue, ParameterType
 import math
 
 import cv2
@@ -69,6 +72,14 @@ class CoverageNavigatorTester(Node):
         self.current_costmap = None  # Initialize costmap storage
         while not self.get_costmap_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for GetCostmap service...')
+        
+        # Initialize parameter client for updating ROS2 parameters
+        self.param_client = self.create_client(SetParameters, '/coverage_server/set_parameters')
+        self.get_logger().info('Checking for coverage_server parameter service...')
+        if not self.param_client.wait_for_service(timeout_sec=5.0):
+            self.get_logger().warn('Coverage server parameter service not available. Parameter updates will be attempted when needed.')
+        else:
+            self.get_logger().info('Coverage server parameter service is ready.')
 
     def call_get_costmap_service(self):
         try:
@@ -987,16 +998,75 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             with open(self.config_file, 'w', encoding='utf-8') as file:
                 yaml.dump(config, file, default_flow_style=False, allow_unicode=True)
             
-            return jsonify({
+            # Also update the live ROS2 parameter
+            ros_param_success = self._update_ros2_parameter(param_name, new_value)
+            
+            response_data = {
                 "code": 0,
                 "message": "参数更新成功",
                 "parameter": param_name,
                 "old_value": old_value,
-                "new_value": new_value
-            })
+                "new_value": new_value,
+                "ros2_parameter_updated": ros_param_success
+            }
+            
+            if not ros_param_success:
+                response_data["warning"] = "YAML文件已更新，但ROS2参数更新失败"
+            
+            return jsonify(response_data)
             
         except Exception as e:
             return jsonify({"code": 1, "error": f"设置参数时出错: {str(e)}"}), 500
+
+    def _update_ros2_parameter(self, param_name, value):
+        """更新实时ROS2参数"""
+        try:
+            # Create parameter object based on value type
+            if isinstance(value, bool):
+                param_value = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=value)
+            elif isinstance(value, int):
+                param_value = ParameterValue(type=ParameterType.PARAMETER_INTEGER, integer_value=value)
+            elif isinstance(value, float):
+                param_value = ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=value)
+            elif isinstance(value, str):
+                param_value = ParameterValue(type=ParameterType.PARAMETER_STRING, string_value=value)
+            else:
+                self.get_logger().error(f"Unsupported parameter type: {type(value)}")
+                return False
+            
+            # Create parameter
+            param = Parameter(name=param_name, value=param_value)
+            
+            # Create service request
+            request = SetParameters.Request()
+            request.parameters = [param]
+            
+            # Call service asynchronously
+            future = self.param_client.call_async(request)
+            
+            # Wait for response with timeout
+            rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+            
+            if future.result() is not None:
+                response = future.result()
+                if response.results and len(response.results) > 0:
+                    result = response.results[0]
+                    if result.successful:
+                        self.get_logger().info(f"Successfully updated ROS2 parameter '{param_name}' to {value}")
+                        return True
+                    else:
+                        self.get_logger().error(f"Failed to update ROS2 parameter '{param_name}': {result.reason}")
+                        return False
+                else:
+                    self.get_logger().error(f"No results in parameter service response")
+                    return False
+            else:
+                self.get_logger().error(f"Parameter service call timed out for '{param_name}'")
+                return False
+                
+        except Exception as e:
+            self.get_logger().error(f"Error updating ROS2 parameter '{param_name}': {str(e)}")
+            return False
     
     def _run_navigation_task(self, field, swath_angle, repeat_times=1, mode='SET_ANGLE', objective='', step_angle=0.0):
         """在单独的线程中运行导航任务。"""
