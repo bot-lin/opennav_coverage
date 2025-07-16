@@ -1020,12 +1020,20 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
     def _update_ros2_parameter(self, param_name, value):
         """更新实时ROS2参数"""
         try:
-            # Create parameter object - let Parameter constructor handle the value conversion
-            param = Parameter(name=param_name, value=value)
             
             # Create service request
             request = SetParametersAtomically.Request()
-            request.parameters = [param]
+            data = Parameter()
+            data.name = param_name
+            if isinstance(value, bool):
+                data.type = Parameter.TYPE_BOOL
+                data.bool_value = value
+            elif isinstance(value, int):
+                data.type = Parameter.TYPE_INTEGER
+                data.integer_value = value
+            elif isinstance(value, float):
+                data.type = Parameter.TYPE_DOUBLE
+            request.parameters = [data]
             
             # Call service asynchronously
             future = self.param_client.call_async(request)
