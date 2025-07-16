@@ -32,7 +32,7 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rcl_interfaces.srv import SetParameters
+from rcl_interfaces.srv import SetParameters, SetParametersAtomically
 from rcl_interfaces.msg import ParameterValue, ParameterType
 import math
 
@@ -69,12 +69,12 @@ class CoverageNavigatorTester(Node):
                                             'navigate_complete_coverage')
         self.get_logger().info('Waiting for global costmap message...')
         self.get_costmap_client = self.create_client(GetCostmap, '/global_costmap/get_costmap')
-        self.current_costmap = None  # Initialize costmap storage
+        self.current_costmap = None  # Initialize costmap storage   
         while not self.get_costmap_client.wait_for_service(timeout_sec=1.0):
             self.get_logger().info('Waiting for GetCostmap service...')
         
         # Initialize parameter client for updating ROS2 parameters
-        self.param_client = self.create_client(SetParameters, '/coverage_server/set_parameters')
+        self.param_client = self.create_client(SetParametersAtomically, '/coverage_server/set_parameters_atomically')
         self.get_logger().info('Checking for coverage_server parameter service...')
         if not self.param_client.wait_for_service(timeout_sec=5.0):
             self.get_logger().warn('Coverage server parameter service not available. Parameter updates will be attempted when needed.')
@@ -1038,7 +1038,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             param = Parameter(name=param_name, value=param_value)
             
             # Create service request
-            request = SetParameters.Request()
+            request = SetParametersAtomically.Request()
             request.parameters = [param]
             
             # Call service asynchronously
