@@ -32,8 +32,7 @@ from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from rcl_interfaces.srv import SetParameters, SetParametersAtomically
-from rcl_interfaces.msg import ParameterValue, ParameterType
+from rcl_interfaces.srv import SetParametersAtomically
 import math
 
 import cv2
@@ -1021,21 +1020,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
     def _update_ros2_parameter(self, param_name, value):
         """更新实时ROS2参数"""
         try:
-            # Create parameter object based on value type
-            if isinstance(value, bool):
-                param_value = ParameterValue(type=ParameterType.PARAMETER_BOOL, bool_value=value)
-            elif isinstance(value, int):
-                param_value = ParameterValue(type=ParameterType.PARAMETER_INTEGER, integer_value=value)
-            elif isinstance(value, float):
-                param_value = ParameterValue(type=ParameterType.PARAMETER_DOUBLE, double_value=value)
-            elif isinstance(value, str):
-                param_value = ParameterValue(type=ParameterType.PARAMETER_STRING, string_value=value)
-            else:
-                self.get_logger().error(f"Unsupported parameter type: {type(value)}")
-                return False
-            
-            # Create parameter
-            param = Parameter(name=param_name, value=param_value)
+            # Create parameter object - let Parameter constructor handle the value conversion
+            param = Parameter(name=param_name, value=value)
             
             # Create service request
             request = SetParametersAtomically.Request()
