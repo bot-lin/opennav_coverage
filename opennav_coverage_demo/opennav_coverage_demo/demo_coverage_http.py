@@ -1026,13 +1026,14 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             data = Parameter()
             data.name = param_name
             if isinstance(value, bool):
-                data.type = Parameter.TYPE_BOOL
+                data.type = 1
                 data.bool_value = value
             elif isinstance(value, int):
-                data.type = Parameter.TYPE_INTEGER
+                data.type = 2
                 data.integer_value = value
             elif isinstance(value, float):
-                data.type = Parameter.TYPE_DOUBLE
+                data.type = 3
+                data.double_value = value
             request.parameters = [data]
             
             # Call service asynchronously
