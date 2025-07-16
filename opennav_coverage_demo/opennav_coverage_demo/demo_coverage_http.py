@@ -31,7 +31,7 @@ import rclpy
 from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
-from rclpy.parameter import Parameter
+from rcl_interfaces.msg import Parameter
 from rcl_interfaces.srv import SetParametersAtomically
 import math
 
