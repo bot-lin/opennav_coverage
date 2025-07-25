@@ -1078,6 +1078,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             if self.cancel_required:
                 logging.info("取消请求已收到，停止导航任务。")
                 self.cancel_required = False
+                return
 
             logging.info(f"导航任务完成，结果: {self.getResult()}")
         
