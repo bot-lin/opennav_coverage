@@ -448,7 +448,7 @@ class BasicNavigator(Node):
                 coord = Coordinate()
                 coord.axis1 = point.x
                 coord.axis2 = point.y
-                coords.append(coord)
+                coords.coordinates.append(coord)
             p.append(coords)
         goal_msg.polygons = p
         goal_msg.swath_mode.best_angle = best_angle
