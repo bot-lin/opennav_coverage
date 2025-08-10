@@ -38,8 +38,7 @@ import math
 
 import cv2
 import numpy as np
-from nav2_msgs.srv import GetCostmap
-from nav2_msgs.msg import Costmap
+
 from opennav_coverage_demo.robot_nagivator import BasicNavigator
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -67,11 +66,7 @@ class CoverageNavigatorTester(Node):
 
         self.coverage_client = ActionClient(self, NavigateCompleteCoverage,
                                             'navigate_complete_coverage')
-        self.get_logger().info('Waiting for global costmap message...')
-        self.get_costmap_client = self.create_client(GetCostmap, '/global_costmap/get_costmap')
         self.current_costmap = None  # Initialize costmap storage   
-        while not self.get_costmap_client.wait_for_service(timeout_sec=1.0):
-            self.get_logger().info('Waiting for GetCostmap service...')
         
         # Initialize parameter client for updating ROS2 parameters
         self.param_client = self.create_client(SetParametersAtomically, '/coverage_server/set_parameters_atomically')
@@ -83,26 +78,20 @@ class CoverageNavigatorTester(Node):
 
     def call_get_costmap_service(self):
         try:
-            # Create service request
-            request = GetCostmap.Request()
-            # Note: specs field can be left empty for default behavior
-            
-            # Call service asynchronously
-            future = self.get_costmap_client.call_async(request)
-            
-            # Wait for response
-            rclpy.spin_until_future_complete(self, future)
-            
-            if future.result() is not None:
-                costmap_response = future.result()
-                # Store the costmap for later use
-                self.current_costmap = costmap_response.map
-                free_contours_world = self.process_costmap(costmap_response.map)
+            url = "http://127.0.0.1:1234/get_global_costmap"
+            self.get_logger().info('Calling GetCostmap service...')
+            res = requests.get(url)
+            if res.status_code == 200:
+                self.get_logger().info('GetCostmap service call succeeded.')
+                data = res.json()
+                self.current_costmap = data['data']
+                free_contours_world = self.process_costmap(data)
                 return free_contours_world[0]['world_coordinates']
+                # Process the response as needed
             else:
-                self.get_logger().error('Service call failed')
+                self.get_logger().error(f'GetCostmap service call failed with status code: {res.status_code}')
                 return None
-                
+                  
         except Exception as e:
             self.get_logger().error(f'Error calling service: {str(e)}')
             return None
