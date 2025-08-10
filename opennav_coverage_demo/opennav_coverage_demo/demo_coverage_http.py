@@ -588,7 +588,7 @@ class CoverageNavigatorTester(Node):
                 'is_dest': True,
                 'precise_xy': 0.08,
                 'precise_rad': 6.28,
-                'nav_type': 'auto',
+                'nav_type': 'straight',
                 'actions': [],
                 'is_reverse': False,
                 'inflation_radius': 1.1,
