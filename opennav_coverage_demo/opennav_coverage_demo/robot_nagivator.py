@@ -446,8 +446,8 @@ class BasicNavigator(Node):
             coords = Coordinates()
             for point in polygon.points:
                 coord = Coordinate()
-                coord.x = point.x
-                coord.y = point.y
+                coord.axis1 = point.x
+                coord.axis2 = point.y
                 coords.append(coord)
             p.append(coords)
         goal_msg.polygons = p
