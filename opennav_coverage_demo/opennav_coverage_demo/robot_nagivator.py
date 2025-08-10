@@ -43,6 +43,7 @@ from rclpy.qos import QoSDurabilityPolicy, QoSHistoryPolicy
 from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from geometry_msgs.msg import Twist
 from opennav_coverage_msgs.action import ComputeCoveragePath
+from opennav_coverage_msgs.msg import Coordinates, Coordinate
 import sys
 
 
@@ -440,7 +441,16 @@ class BasicNavigator(Node):
                 "'ComputePathToPose' action server not available, waiting...")
 
         goal_msg = ComputeCoveragePath.Goal()
-        goal_msg.polygons = polygons
+        p = []
+        for polygon in polygons:
+            coords = Coordinates()
+            for point in polygon.points:
+                coord = Coordinate()
+                coord.x = point.x
+                coord.y = point.y
+                coords.append(coord)
+            p.append(coords)
+        goal_msg.polygons = p
         goal_msg.swath_mode.best_angle = best_angle
         goal_msg.swath_mode.step_angle = step_angle
         goal_msg.swath_mode.mode = swath_mode
