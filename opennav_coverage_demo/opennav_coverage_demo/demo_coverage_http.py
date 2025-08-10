@@ -404,11 +404,11 @@ class CoverageNavigatorTester(Node):
             self.get_logger().info(f'Cropping costmap to user polygon: {user_polygon}')
             
             # Extract costmap data
-            data = np.array(costmap_msg.data, dtype=np.uint8).reshape((costmap_msg.metadata.size_y, costmap_msg.metadata.size_x))
-            resolution = costmap_msg.metadata.resolution
-            origin_x = costmap_msg.metadata.origin.position.x
-            origin_y = costmap_msg.metadata.origin.position.y
-            
+            data = np.array(costmap_msg['data'], dtype=np.uint8).reshape((costmap_msg['metadata']['size_y'], costmap_msg['metadata']['size_x']))
+            resolution = costmap_msg['metadata']['resolution']
+            origin_x = costmap_msg['metadata']['origin']['position']['x']
+            origin_y = costmap_msg['metadata']['origin']['position']['y']
+
             self.get_logger().info(f'Costmap resolution: {resolution} m/cell, origin: ({origin_x}, {origin_y})')
             
             # Convert user polygon to pixel coordinates
