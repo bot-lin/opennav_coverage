@@ -39,7 +39,7 @@ import cv2
 import numpy as np
 from nav2_msgs.srv import GetCostmap
 from nav2_msgs.msg import Costmap
-
+from opennav_coverage_demo.robot_nagivator import BasicNavigator
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -529,6 +529,16 @@ class CoverageNavigatorTester(Node):
         print("Waiting for 'NavigateCompleteCoverage' action server")
         while not self.coverage_client.wait_for_server(timeout_sec=1.0):
             print('"NavigateCompleteCoverage" action server not available, waiting...')
+        
+        self.robot_navigator.getFullCoveragePath(
+            self.toPolygon(field),
+            best_angle = swath_angle,
+            swath_mode = mode,
+            step_angle = step_angle,
+            swath_objective = objective
+        )
+        return
+
 
         goal_msg = NavigateCompleteCoverage.Goal()
         goal_msg.frame_id = 'map'
@@ -629,6 +639,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
         self.current_repeat = 0
         self.cancel_required = False
         self.config_file = '/data/params/coverage_params.yaml'  # Will be set when needed
+        self.robot_navigator = BasicNavigator()
         self.setup_routes()
         
     def setup_routes(self):
@@ -706,6 +717,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                         return jsonify({"code": 1,"error": "'repeat_times'必须是正整数"}), 400
                 else:
                     repeat_times = 1
+
+                
                     
                 # 如果有正在运行的任务，先取消它
                 if self.task_thread and self.task_thread.is_alive():
