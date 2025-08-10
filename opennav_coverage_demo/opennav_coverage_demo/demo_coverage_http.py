@@ -19,6 +19,7 @@ import threading
 import json
 import logging
 import os
+import requests
 import yaml
 from flask import Flask, request, jsonify, Response
 
@@ -563,10 +564,12 @@ class CoverageNavigatorTester(Node):
         return True
 
     def sendTaskRequest(self, wayppints):
+        flask_ros_url = '127.0.0.1:1234'
         ros_data = {
             "wps": [],
-                "is_repeat": False,
-                "task_uid": "test_task"
+            "is_repeat": False,
+            "task_uid": "test_task",
+            "use_path_map": False
             }
         for waypoint in wayppints:
             wp = {
@@ -586,6 +589,9 @@ class CoverageNavigatorTester(Node):
                 'nav_type': 'auto'
             }
             ros_data['wps'].append(wp)
+        url = "{}/execute_task".format(flask_ros_url)
+        
+        response = requests.post(url, json=ros_data)
 
     def isTaskComplete(self):
         """Check if the task request of any type is complete yet."""
