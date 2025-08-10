@@ -538,6 +538,7 @@ class CoverageNavigatorTester(Node):
             step_angle = step_angle,
             swath_objective = objective
         )
+        self.sendTaskRequest(waypoints)
         return
 
 
