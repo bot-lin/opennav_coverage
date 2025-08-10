@@ -478,8 +478,12 @@ class BasicNavigator(Node):
         swaths = coverage_path.swaths
         turns = coverage_path.turns
         self.info(f'Got {len(swaths)} swaths and {len(turns)} turns in the coverage path.')
-        self.info(f'Swaths: {swaths}')
-        self.info(f'Turns: {turns}')
+        self.info(f'——————————————————————')
+        for i, swath in enumerate(swaths):
+            self.info(f'Swath {i}: {swath}')
+        for i, turn in enumerate(turns):
+            self.info(f'Turn {i}: {turn}')
+
 
         return result
 
