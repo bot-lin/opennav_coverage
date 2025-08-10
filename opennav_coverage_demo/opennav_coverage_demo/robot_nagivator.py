@@ -477,15 +477,18 @@ class BasicNavigator(Node):
         coverage_path = result.coverage_path
         swaths = coverage_path.swaths
         turns = coverage_path.turns
+        waypoints = []
         self.info(f'Got {len(swaths)} swaths and {len(turns)} turns in the coverage path.')
         self.info(f'——————————————————————')
         for i, swath in enumerate(swaths):
+            waypoints.append(swath.start)
+            waypoints.append(swath.end)
             self.info(f'Swath {i}: {swath}')
         for i, turn in enumerate(turns):
             self.info(f'Turn {i}: {turn}')
 
 
-        return result
+        return waypoints
 
     def getPathThroughPoses(self, start, goals, planner_id='', use_start=False):
         """Send a `ComputePathThroughPoses` action request."""

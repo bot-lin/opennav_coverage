@@ -530,7 +530,7 @@ class CoverageNavigatorTester(Node):
         while not self.coverage_client.wait_for_server(timeout_sec=1.0):
             print('"NavigateCompleteCoverage" action server not available, waiting...')
         
-        self.robot_navigator.getFullCoveragePath(
+        waypoints = self.robot_navigator.getFullCoveragePath(
             [self.toPolygon(field)],
             best_angle = swath_angle,
             swath_mode = mode,
@@ -561,6 +561,31 @@ class CoverageNavigatorTester(Node):
 
         self.result_future = self.goal_handle.get_result_async()
         return True
+
+    def sendTaskRequest(self, wayppints):
+        ros_data = {
+            "wps": [],
+                "is_repeat": False,
+                "task_uid": "test_task"
+            }
+        for waypoint in wayppints:
+            wp = {
+                'pose': {
+                    'position': {
+                        'x': waypoint.x,
+                        'y': waypoint.y
+                    },
+                    'orientation': {
+                        'z': 0.0,
+                        'w': 1.0
+                    }
+                },
+                'is_dest': True,
+                'precise_xy': 0.8,
+                'precise_rad': 6.28,
+                'nav_type': 'auto'
+            }
+            ros_data['wps'].append(wp)
 
     def isTaskComplete(self):
         """Check if the task request of any type is complete yet."""
