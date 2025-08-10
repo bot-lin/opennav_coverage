@@ -133,18 +133,18 @@ class CoverageNavigatorTester(Node):
             world_contour.append([world_x, world_y])
         return world_contour
 
-    def process_costmap(self, msg: Costmap):
+    def process_costmap(self, msg):
         try:
             # Convert Costmap data to numpy array
             # Note: Costmap uses uint8 (0-255) instead of int8 (-128 to 127)
-            data = np.array(msg.data, dtype=np.uint8).reshape((msg.metadata.size_y, msg.metadata.size_x))
+            data = np.array(msg['data'], dtype=np.uint8).reshape((msg['metadata']['size_y'], msg['metadata']['size_x']))
             
             # Extract metadata for coordinate conversion
-            resolution = msg.metadata.resolution
-            origin_x = msg.metadata.origin.position.x
-            origin_y = msg.metadata.origin.position.y
-            
-            self.get_logger().info(f'Costmap size: {msg.metadata.size_x} x {msg.metadata.size_y}')
+            resolution = msg['metadata']['resolution']
+            origin_x = msg['metadata']['origin']['position']['x']
+            origin_y = msg['metadata']['origin']['position']['y']
+
+            self.get_logger().info(f'Costmap size: {msg["metadata"]["size_x"]} x {msg["metadata"]["size_y"]}')
             self.get_logger().info(f'Costmap resolution: {resolution} m/cell')
             self.get_logger().info(f'Costmap origin: ({origin_x}, {origin_y}) meters')
 
