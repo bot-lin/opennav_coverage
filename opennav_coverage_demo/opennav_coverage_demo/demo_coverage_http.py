@@ -1134,7 +1134,7 @@ def main():
     
     # 创建ROS节点和服务器
     navigator_server = CoverageNavigatorServer()
-    navigator_server.startup()
+    # navigator_server.startup()
     
     # 在单独的线程中处理ROS循环
     ros_thread = threading.Thread(target=rclpy.spin, args=(navigator_server,))
