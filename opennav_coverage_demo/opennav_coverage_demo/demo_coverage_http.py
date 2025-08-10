@@ -564,15 +564,15 @@ class CoverageNavigatorTester(Node):
         self.result_future = self.goal_handle.get_result_async()
         return True
 
-    def sendTaskRequest(self, wayppints):
-        flask_ros_url = '127.0.0.1:1234'
+    def sendTaskRequest(self, waypoints):
+        flask_ros_url = 'http://127.0.0.1:1234'
         ros_data = {
             "wps": [],
             "is_repeat": False,
             "task_uid": "test_task",
             "use_path_map": False
             }
-        for waypoint in wayppints:
+        for waypoint in waypoints:
             wp = {
                 'pose': {
                     'position': {
