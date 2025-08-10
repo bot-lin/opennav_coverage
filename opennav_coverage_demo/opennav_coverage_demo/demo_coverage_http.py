@@ -587,7 +587,9 @@ class CoverageNavigatorTester(Node):
                 'is_dest': True,
                 'precise_xy': 0.8,
                 'precise_rad': 6.28,
-                'nav_type': 'auto'
+                'nav_type': 'auto',
+                'actions': [],
+                'is_reverse': False,
             }
             ros_data['wps'].append(wp)
         url = "{}/execute_task".format(flask_ros_url)
