@@ -590,6 +590,7 @@ class CoverageNavigatorTester(Node):
                 'nav_type': 'auto',
                 'actions': [],
                 'is_reverse': False,
+                'inflation_radius': 1.1
             }
             ros_data['wps'].append(wp)
         url = "{}/execute_task".format(flask_ros_url)
