@@ -572,6 +572,7 @@ class CoverageNavigatorTester(Node):
             "task_uid": "test_task",
             "use_path_map": False
             }
+        index = 0
         for waypoint in waypoints:
             wp = {
                 'pose': {
@@ -590,9 +591,11 @@ class CoverageNavigatorTester(Node):
                 'nav_type': 'auto',
                 'actions': [],
                 'is_reverse': False,
-                'inflation_radius': 1.1
+                'inflation_radius': 1.1,
+                'uid': f'wp_{index}',
             }
             ros_data['wps'].append(wp)
+            index += 1
         url = "{}/execute_task".format(flask_ros_url)
         
         response = requests.post(url, json=ros_data)
