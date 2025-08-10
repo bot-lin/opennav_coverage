@@ -531,7 +531,7 @@ class CoverageNavigatorTester(Node):
             print('"NavigateCompleteCoverage" action server not available, waiting...')
         
         self.robot_navigator.getFullCoveragePath(
-            self.toPolygon(field),
+            [self.toPolygon(field)],
             best_angle = swath_angle,
             swath_mode = mode,
             step_angle = step_angle,
