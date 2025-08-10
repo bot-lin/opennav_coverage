@@ -417,14 +417,14 @@ class CoverageNavigatorTester(Node):
                 pixel_x = int((point[0] - origin_x) / resolution)
                 pixel_y = int((point[1] - origin_y) / resolution)
                 # Clamp to valid pixel range
-                pixel_x = max(0, min(pixel_x, costmap_msg.metadata.size_x - 1))
-                pixel_y = max(0, min(pixel_y, costmap_msg.metadata.size_y - 1))
+                pixel_x = max(0, min(pixel_x, costmap_msg['metadata']['size_x'] - 1))
+                pixel_y = max(0, min(pixel_y, costmap_msg['metadata']['size_y'] - 1))
                 user_polygon_pixels.append([pixel_x, pixel_y])
             
             self.get_logger().info(f'User polygon in pixels: {user_polygon_pixels}')
             
             # Create a mask for the user polygon
-            mask = np.zeros((costmap_msg.metadata.size_y, costmap_msg.metadata.size_x), dtype=np.uint8)
+            mask = np.zeros((costmap_msg['metadata']['size_y'], costmap_msg['metadata']['size_x']), dtype=np.uint8)
             polygon_contour = np.array(user_polygon_pixels, dtype=np.int32)
             cv2.fillPoly(mask, [polygon_contour], 255)
             
