@@ -59,6 +59,7 @@ class CoverageNavigatorTester(Node):
         self.result_future = None
         self.status = None
         self.feedback = None
+        self.current_waypoints = None
         self.resume_required = False
 
         self.create_subscription(BehaviorTreeLog, '/behavior_tree_log',
@@ -520,38 +521,15 @@ class CoverageNavigatorTester(Node):
         while not self.coverage_client.wait_for_server(timeout_sec=1.0):
             print('"NavigateCompleteCoverage" action server not available, waiting...')
         
-        waypoints = self.robot_navigator.getFullCoveragePath(
+        self.current_waypoints = self.robot_navigator.getFullCoveragePath(
             [self.toPolygon(field)],
             best_angle = swath_angle,
             swath_mode = mode,
             step_angle = step_angle,
             swath_objective = objective
         )
-        self.sendTaskRequest(waypoints)
         return
 
-
-        goal_msg = NavigateCompleteCoverage.Goal()
-        goal_msg.frame_id = 'map'
-        goal_msg.swath_angle = swath_angle
-        goal_msg.mode = mode
-        goal_msg.step_angle = step_angle
-        goal_msg.objective = objective
-        goal_msg.behavior_tree = "/data/behavior_trees/navigate_w_basic_complete_coverage_nav_to_start.xml"
-        goal_msg.polygons.append(self.toPolygon(field))
-
-        print('Navigating to with field of size: ' + str(len(field)) + '...')
-        send_goal_future = self.coverage_client.send_goal_async(goal_msg,
-                                                                self._feedbackCallback)
-        rclpy.spin_until_future_complete(self, send_goal_future)
-        self.goal_handle = send_goal_future.result()
-
-        if not self.goal_handle.accepted:
-            print('Navigate Coverage request was rejected!')
-            return False
-
-        self.result_future = self.goal_handle.get_result_async()
-        return True
 
     def sendTaskRequest(self, waypoints):
         flask_ros_url = 'http://127.0.0.1:1234'
@@ -588,6 +566,7 @@ class CoverageNavigatorTester(Node):
         url = "{}/execute_task".format(flask_ros_url)
         
         response = requests.post(url, json=ros_data)
+        return response.json()['code']
 
     def isTaskComplete(self):
         """Check if the task request of any type is complete yet."""
@@ -796,6 +775,25 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     "status": status,
                     "task_complete": True
                 })
+
+        @self.app.route('/start_navigation', methods=['GET'])
+        def handle_start_navigation():
+            if self.current_waypoints is None or len(self.current_waypoints) == 0:
+                return jsonify({
+                    "code": 1,
+                    "error": "没有可用的导航路径，请先调用 /navigate_coverage 接口"
+                }), 400
+            result = self.sendTaskRequest(self.current_waypoints)
+            if result != 0:
+                return jsonify({
+                    "code": 1,
+                    "error": "导航任务请求失败，可能是服务器错误或路径问题"
+                }), 500
+            self.current_waypoints = None  # 清除当前路径，防止重复提交
+            return jsonify({
+                "code": 0,
+                "status": "导航任务已开始"
+            }), 200
 
         @self.app.route('/cancel', methods=['GET'])
         def handle_cancel():
