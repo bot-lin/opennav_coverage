@@ -539,7 +539,7 @@ class CoverageNavigatorTester(Node):
                 return []
 
 
-    def sendTaskRequest(self, waypoints, wait_at_first_point=False):
+    def sendTaskRequest(self, waypoints, wait_at_first_waypoint=False):
         flask_ros_url = 'http://127.0.0.1:1234'
         ros_data = {
             "wps": [],
@@ -550,7 +550,7 @@ class CoverageNavigatorTester(Node):
         index = 0
         for waypoint in waypoints:
             actions = []
-            if index == 0 and wait_at_first_point:
+            if index == 0 and wait_at_first_waypoint:
                 actions.append({
                     'name': 'wait_for_command',
                     'id': 13
