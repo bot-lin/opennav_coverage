@@ -61,6 +61,7 @@ class CoverageNavigatorTester(Node):
         self.feedback = None
         self.current_waypoints = None
         self.resume_required = False
+        self._action_lock = threading.Lock()  # Thread safety lock
 
         self.create_subscription(BehaviorTreeLog, '/behavior_tree_log',
                                  self.behavior_tree_log_callback, 10)
@@ -517,18 +518,25 @@ class CoverageNavigatorTester(Node):
 
     def navigateCoverage(self, field, swath_angle=0.0, mode='SET_ANGLE', step_angle=0.0, objective=""):
         """Send a `NavToPose` action request."""
-        print("Waiting for 'NavigateCompleteCoverage' action server")
-        while not self.coverage_client.wait_for_server(timeout_sec=1.0):
-            print('"NavigateCompleteCoverage" action server not available, waiting...')
-        
-        self.current_waypoints, path = self.robot_navigator.getFullCoveragePath(
-            [self.toPolygon(field)],
-            best_angle = swath_angle,
-            swath_mode = mode,
-            step_angle = step_angle,
-            swath_objective = objective
-        )
-        return path
+        with self._action_lock:  # Thread-safe access to action client
+            print("Waiting for 'NavigateCompleteCoverage' action server")
+            while not self.coverage_client.wait_for_server(timeout_sec=1.0):
+                print('"NavigateCompleteCoverage" action server not available, waiting...')
+            
+            try:
+                self.current_waypoints, path = self.robot_navigator.getFullCoveragePath(
+                    [self.toPolygon(field)],
+                    best_angle = swath_angle,
+                    swath_mode = mode,
+                    step_angle = step_angle,
+                    swath_objective = objective
+                )
+                return path
+            except Exception as e:
+                self.get_logger().error(f"Error in getFullCoveragePath: {str(e)}")
+                # Fallback: return empty path if robot_navigator fails
+                self.current_waypoints = []
+                return []
 
 
     def sendTaskRequest(self, waypoints):
@@ -573,18 +581,23 @@ class CoverageNavigatorTester(Node):
         if not self.result_future:
             # task was cancelled or completed
             return True
-        rclpy.spin_until_future_complete(self, self.result_future, timeout_sec=0.10)
-        if self.result_future.result():
-            self.status = self.result_future.result().status
-            if self.status != GoalStatus.STATUS_SUCCEEDED:
-                print(f'Task with failed with status code: {self.status}')
+        
+        # Use done() instead of spin_until_future_complete for thread safety
+        if self.result_future.done():
+            result = self.result_future.result()
+            if result:
+                self.status = result.status
+                if self.status != GoalStatus.STATUS_SUCCEEDED:
+                    print(f'Task with failed with status code: {self.status}')
+                    return True
+                print('Task succeeded!')
+                return True
+            else:
+                print('Task failed - no result available')
                 return True
         else:
-            # Timed out, still processing, not complete yet
+            # Still processing, not complete yet
             return False
-
-        print('Task succeeded!')
-        return True
 
     def _feedbackCallback(self, msg):
         self.feedback = msg.feedback
@@ -618,20 +631,40 @@ class CoverageNavigatorTester(Node):
         while state != 'active':
             print(f'Getting {node_name} state...')
             future = state_client.call_async(req)
-            rclpy.spin_until_future_complete(self, future)
-            if future.result() is not None:
+            # Use a timeout and check if done rather than spin_until_future_complete
+            timeout_count = 0
+            while not future.done() and timeout_count < 50:  # 5 second timeout
+                time.sleep(0.1)
+                timeout_count += 1
+            
+            if future.done() and future.result() is not None:
                 state = future.result().current_state.label
                 print(f'Result of get_state: {state}')
+            else:
+                print(f'Timeout getting {node_name} state, retrying...')
             time.sleep(2)
         return
 
     def cancelTask(self):
         """Cancel pending task request of any type."""
-        self.get_logger().info('Canceling current task.')
-        if self.result_future:
-            future = self.goal_handle.cancel_goal_async()
-            rclpy.spin_until_future_complete(self, future)
-        return True
+        with self._action_lock:  # Thread-safe access to action client
+            self.get_logger().info('Canceling current task.')
+            if self.result_future and self.goal_handle:
+                try:
+                    future = self.goal_handle.cancel_goal_async()
+                    # Wait for cancellation to complete with timeout
+                    timeout_count = 0
+                    while not future.done() and timeout_count < 50:  # 5 second timeout
+                        time.sleep(0.1)
+                        timeout_count += 1
+                    
+                    if future.done():
+                        self.get_logger().info('Task cancellation completed.')
+                    else:
+                        self.get_logger().warn('Task cancellation timed out.')
+                except Exception as e:
+                    self.get_logger().error(f"Error cancelling task: {str(e)}")
+            return True
 
 
 class CoverageNavigatorServer(CoverageNavigatorTester):
@@ -1079,9 +1112,12 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             future = self.param_client.call_async(request)
             
             # Wait for response with timeout
-            rclpy.spin_until_future_complete(self, future, timeout_sec=2.0)
+            timeout_count = 0
+            while not future.done() and timeout_count < 20:  # 2 second timeout
+                time.sleep(0.1)
+                timeout_count += 1
             
-            if future.result() is not None:
+            if future.done() and future.result() is not None:
                 response = future.result()
                 result = response.result
                 if result.successful:
@@ -1126,8 +1162,13 @@ def main():
     navigator_server = CoverageNavigatorServer()
     # navigator_server.startup()
     
-    # 在单独的线程中处理ROS循环
-    ros_thread = threading.Thread(target=rclpy.spin, args=(navigator_server,))
+    # Create executor for thread-safe ROS operations
+    from rclpy.executors import MultiThreadedExecutor
+    executor = MultiThreadedExecutor()
+    executor.add_node(navigator_server)
+    
+    # 在单独的线程中处理ROS循环，使用MultiThreadedExecutor
+    ros_thread = threading.Thread(target=executor.spin)
     ros_thread.daemon = True
     ros_thread.start()
     
@@ -1137,6 +1178,7 @@ def main():
     except KeyboardInterrupt:
         logging.info("服务器正在关闭...")
     finally:
+        executor.shutdown()
         navigator_server.destroy_node()
         rclpy.shutdown()
 
