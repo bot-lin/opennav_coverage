@@ -30,6 +30,10 @@ cd opennav_coverage_demo && python -m pytest
 # Run individual test files
 python test_simple_api.py
 python test_ros2_param_api.py
+
+# Run standalone coverage planning tests
+python opennav_coverage/test/tester.py
+python opennav_row_coverage/test/tester.py
 ```
 
 ### Linting and Code Quality
@@ -74,7 +78,8 @@ All generators accept different modes and parameters, making the system highly c
 ### Launch Files
 - `opennav_coverage_demo/launch/coverage_demo_launch.py`: Full coverage navigation demo
 - `opennav_coverage_demo/launch/row_coverage_demo_launch.py`: Row-based coverage demo
-- HTTP API variants available for remote operation
+- `opennav_coverage_demo/launch/*_http_*launch.py`: HTTP API variants for remote operation
+- `opennav_coverage_demo/launch/bringup_launch.py`: Basic server bringup without navigation
 
 ## Dependencies
 
@@ -113,3 +118,16 @@ colcon build --packages-select Fields2Cover
 - Uses Nav2 lifecycle node patterns
 - Follows ROS 2 ament package structure
 - Python packages use setuptools with pytest testing
+
+### HTTP API for Remote Parameter Management
+The demo package provides an HTTP server for easy parameter configuration:
+- **Base URL**: `http://localhost:1235`
+- **Endpoints**: `/robot_width`, `/operation_width`, `/min_turning_radius`, `/headland_width`, `/swath_angle`, `/allow_overlap`
+- **Usage**: GET to read parameters, POST with JSON `{"value": X}` to update
+- **Setup**: POST to `/config_file` with `{"file_path": "/path/to/demo_params.yaml"}` first
+- **Entry point**: `demo_coverage_http` console script
+
+### Demo Applications
+- **demo_coverage**: Basic coverage planning demonstration
+- **demo_coverage_http**: HTTP API server for remote parameter management
+- **demo_row_coverage**: Row-based coverage demonstration
