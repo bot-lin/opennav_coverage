@@ -474,6 +474,7 @@ class BasicNavigator(Node):
             return None
         
         result = self.result_future.result().result
+        nav_path = result.nav_path
         coverage_path = result.coverage_path
         swaths = coverage_path.swaths
         turns = coverage_path.turns
@@ -486,9 +487,12 @@ class BasicNavigator(Node):
             self.info(f'Swath {i}: {swath}')
         for i, turn in enumerate(turns):
             self.info(f'Turn {i}: {turn}')
+        path = []
+        for pose in nav_path.poses:
+            path.append([pose.pose.position.x, pose.pose.position.y])
 
 
-        return waypoints
+        return waypoints, path
 
     def getPathThroughPoses(self, start, goals, planner_id='', use_start=False):
         """Send a `ComputePathThroughPoses` action request."""

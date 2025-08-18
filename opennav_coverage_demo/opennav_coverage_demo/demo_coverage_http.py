@@ -521,14 +521,14 @@ class CoverageNavigatorTester(Node):
         while not self.coverage_client.wait_for_server(timeout_sec=1.0):
             print('"NavigateCompleteCoverage" action server not available, waiting...')
         
-        self.current_waypoints = self.robot_navigator.getFullCoveragePath(
+        self.current_waypoints, path = self.robot_navigator.getFullCoveragePath(
             [self.toPolygon(field)],
             best_angle = swath_angle,
             swath_mode = mode,
             step_angle = step_angle,
             swath_objective = objective
         )
-        return
+        return path
 
 
     def sendTaskRequest(self, waypoints):
@@ -731,10 +731,11 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     return jsonify({"code": 1,"error": "已有导航任务正在运行中"}), 409
                     
                 # 在新线程中启动导航任务
-                self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field, swath_angle, repeat_times, mode, objective, step_angle))
-                self.task_thread.start()
-                
-                return jsonify({"code": 0,"status": "导航任务已启动"}), 202
+                # self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field, swath_angle, repeat_times, mode, objective, step_angle))
+                # self.task_thread.start()
+                path = self._run_navigation_task(field, swath_angle, repeat_times, mode, objective, step_angle)
+
+                return jsonify({"code": 0, "path": path, "status": "导航任务已启动"}), 202
             except Exception as e:
                 logging.exception("处理导航请求时出错:")
                 return jsonify({"code": 1, "error": f"服务器处理请求时发生错误: {str(e)}"}), 500
@@ -1098,27 +1099,18 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             return False
     
     def _run_navigation_task(self, field, swath_angle, repeat_times=1, mode='SET_ANGLE', objective='', step_angle=0.0):
-        """在单独的线程中运行导航任务。"""
-        self.repeat_times = repeat_times
-        for i in range(repeat_times):
-            self.current_repeat = i + 1
-            if self.cancel_required:
-                logging.info("取消请求已收到，停止导航任务。")
-                self.cancel_required = False
-                return
-            """在单独的线程中运行导航任务。"""
-            logging.info(f"开始导航任务，区域: {field}, 扫描角度: {swath_angle}")
-            self.navigateCoverage(field, swath_angle, mode=mode, step_angle=step_angle, objective=objective)
+        # """在单独的线程中运行导航任务。"""
+        # self.repeat_times = repeat_times
+        # for i in range(repeat_times):
+        #     self.current_repeat = i + 1
+        #     if self.cancel_required:
+        #         logging.info("取消请求已收到，停止导航任务。")
+        #         self.cancel_required = False
+        #         return
+        #     """在单独的线程中运行导航任务。"""
+        #     logging.info(f"开始导航任务，区域: {field}, 扫描角度: {swath_angle}")
+        return self.navigateCoverage(field, swath_angle, mode=mode, step_angle=step_angle, objective=objective)
             
-            while not self.isTaskComplete():
-                feedback = self.getFeedback()
-                time.sleep(1)
-            if self.cancel_required:
-                logging.info("取消请求已收到，停止导航任务。")
-                self.cancel_required = False
-                return
-
-            logging.info(f"导航任务完成，结果: {self.getResult()}")
         
     def run_server(self, host='0.0.0.0', port=1235):  # 修改端口为1235
         """启动HTTP服务器。"""
