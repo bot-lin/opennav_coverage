@@ -479,14 +479,10 @@ class BasicNavigator(Node):
         swaths = coverage_path.swaths
         turns = coverage_path.turns
         waypoints = []
-        self.info(f'Got {len(swaths)} swaths and {len(turns)} turns in the coverage path.')
-        self.info(f'——————————————————————')
+
         for i, swath in enumerate(swaths):
             waypoints.append(swath.start)
             waypoints.append(swath.end)
-            self.info(f'Swath {i}: {swath}')
-        for i, turn in enumerate(turns):
-            self.info(f'Turn {i}: {turn}')
         path = []
         for pose in nav_path.poses:
             path.append([pose.pose.position.x, pose.pose.position.y])
