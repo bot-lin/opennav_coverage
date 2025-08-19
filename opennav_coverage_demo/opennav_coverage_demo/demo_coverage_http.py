@@ -852,13 +852,13 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                         return jsonify({"code": 1,"error": "'step_angle'必须是数字"}), 400
                     step_angle = math.radians(step_angle)
                 else:
-                    step_angle = 0.0
+                    step_angle = 0.2
                 if "objective" in data:
                     objective = data['objective']
                     if objective not in ['LENGTH', 'NUMBER', 'COVERAGE']:
                         return jsonify({"code": 1,"error": "'objective'必须是'LENGTH', 'NUMBER'或'COVERAGE'"}), 400
                 else:
-                    objective = ''
+                    objective = 'COVERAGE'
                 
                 if "repeat_times" in data:
                     repeat_times = data['repeat_times']
