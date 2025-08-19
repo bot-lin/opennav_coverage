@@ -457,6 +457,107 @@ class CoverageNavigatorTester(Node):
             self.get_logger().error(f'Error processing costmap: {str(e)}')
             return []
 
+    def visualize_field_polygon(self, field_coords, filename_prefix="selected_field"):
+        """
+        Visualize the field polygon for debugging purposes.
+        
+        Args:
+            field_coords: List of [x, y] coordinates defining the field boundary
+            filename_prefix: Prefix for the saved image file
+        """
+        try:
+            if not field_coords or len(field_coords) < 3:
+                self.get_logger().warn("Invalid field coordinates for visualization")
+                return
+            
+            # Convert to numpy array for easier processing
+            coords = np.array(field_coords)
+            
+            # Calculate bounds with some padding
+            min_x, min_y = coords.min(axis=0)
+            max_x, max_y = coords.max(axis=0)
+            padding = max(max_x - min_x, max_y - min_y) * 0.1  # 10% padding
+            
+            # Create image dimensions (scale to reasonable pixel size)
+            width_m = max_x - min_x + 2 * padding
+            height_m = max_y - min_y + 2 * padding
+            scale = min(800 / width_m, 600 / height_m)  # Max 800x600 image
+            
+            img_width = int(width_m * scale)
+            img_height = int(height_m * scale)
+            
+            self.get_logger().info(f"Creating field visualization: {img_width}x{img_height} pixels, scale={scale:.2f} px/m")
+            
+            # Create white background image
+            image = np.ones((img_height, img_width, 3), dtype=np.uint8) * 255
+            
+            # Convert world coordinates to image coordinates
+            def world_to_image(x, y):
+                img_x = int((x - (min_x - padding)) * scale)
+                img_y = int((max_y + padding - y) * scale)  # Flip Y axis
+                return img_x, img_y
+            
+            # Convert field coordinates to image coordinates
+            image_coords = []
+            for coord in field_coords:
+                img_x, img_y = world_to_image(coord[0], coord[1])
+                image_coords.append([img_x, img_y])
+            
+            # Draw field polygon
+            image_coords = np.array(image_coords, dtype=np.int32)
+            cv2.fillPoly(image, [image_coords], (200, 255, 200))  # Light green fill
+            cv2.polylines(image, [image_coords], True, (0, 150, 0), 3)  # Dark green border
+            
+            # Add coordinate labels at vertices
+            for i, coord in enumerate(field_coords[:8]):  # Limit to first 8 points to avoid clutter
+                img_x, img_y = world_to_image(coord[0], coord[1])
+                # Draw point
+                cv2.circle(image, (img_x, img_y), 5, (255, 0, 0), -1)  # Red dot
+                # Add coordinate text
+                text = f"({coord[0]:.1f},{coord[1]:.1f})"
+                font_scale = 0.4
+                thickness = 1
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
+                # Position text to avoid overlap
+                text_x = img_x + 8 if img_x < img_width - text_size[0] - 8 else img_x - text_size[0] - 8
+                text_y = img_y - 8 if img_y > text_size[1] + 8 else img_y + text_size[1] + 8
+                # White background for text
+                cv2.rectangle(image, (text_x - 2, text_y - text_size[1] - 2), 
+                            (text_x + text_size[0] + 2, text_y + 2), (255, 255, 255), -1)
+                cv2.putText(image, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 
+                           font_scale, (0, 0, 0), thickness)
+            
+            # Add title and info
+            title = f"Field Polygon - {len(field_coords)} points"
+            area_m2 = self.calculate_polygon_area(field_coords)
+            subtitle = f"Area: {area_m2:.1f} m² | Bounds: ({min_x:.1f},{min_y:.1f}) to ({max_x:.1f},{max_y:.1f})"
+            
+            cv2.putText(image, title, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+            cv2.putText(image, subtitle, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+            
+            # Save image
+            timestamp = int(time.time())
+            filename = f"{filename_prefix}_{timestamp}.png"
+            cv2.imwrite(filename, image)
+            self.get_logger().info(f"Saved field visualization: {filename}")
+            self.get_logger().info(f"Field area: {area_m2:.1f} m², {len(field_coords)} vertices")
+            
+        except Exception as e:
+            self.get_logger().error(f"Error visualizing field polygon: {str(e)}")
+
+    def calculate_polygon_area(self, coords):
+        """Calculate the area of a polygon using the shoelace formula."""
+        if len(coords) < 3:
+            return 0.0
+        
+        area = 0.0
+        n = len(coords)
+        for i in range(n):
+            j = (i + 1) % n
+            area += coords[i][0] * coords[j][1]
+            area -= coords[j][0] * coords[i][1]
+        return abs(area) / 2.0
+
     def crop_and_find_free_space(self, user_polygon):
         """
         Crop the global costmap to the user's polygon and find the largest free space within it.
@@ -817,11 +918,21 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     use_user_field = data['use_user_field']
                 if use_user_field:
                     field = user_field
+                    self.visualize_field_polygon(field, "user_provided_field")
+                    self.get_logger().info(f"Using user-provided field: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
                 else:
-                    # First get the costmap to store it
-                    _ = self.call_get_costmap_service()
-                    # Crop the costmap to user's polygon and find the largest free space within it
-                    field = self.crop_and_find_free_space(user_field)
+                    # Get the largest free space from costmap analysis
+                    field = self.call_get_costmap_service()
+                    if field:
+                        self.visualize_field_polygon(field, "global_free_space")
+                        self.get_logger().info(f"Using global free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
+                    else:
+                        # If no free space found globally, try cropping to user polygon
+                        self.get_logger().info("No global free space found, trying to crop to user polygon")
+                        field = self.crop_and_find_free_space(user_field)
+                        if field:
+                            self.visualize_field_polygon(field, "cropped_free_space")
+                            self.get_logger().info(f"Using cropped free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
                 
                 if not field:
                     return jsonify({"code": 1,"error": "在用户指定区域内未找到可用的自由空间"}), 404
