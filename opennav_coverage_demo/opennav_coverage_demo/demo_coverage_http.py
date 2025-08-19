@@ -88,8 +88,13 @@ class CoverageNavigatorTester(Node):
                 data = res.json()
                 self.current_costmap = data['data']
                 free_contours_world = self.process_costmap(data)
-                return free_contours_world[0]['world_coordinates']
-                # Process the response as needed
+                
+                # Check if we got valid contours
+                if free_contours_world and len(free_contours_world) > 0:
+                    return free_contours_world[0]['world_coordinates']
+                else:
+                    self.get_logger().warn('No free contours found in costmap')
+                    return None
             else:
                 self.get_logger().error(f'GetCostmap service call failed with status code: {res.status_code}')
                 return None
@@ -136,10 +141,60 @@ class CoverageNavigatorTester(Node):
         return world_contour
 
     def process_costmap(self, msg):
+        free_contours_world = []  # Initialize at the start
         try:
-            # Convert Costmap data to numpy array
-            # Note: Costmap uses uint8 (0-255) instead of int8 (-128 to 127)
-            data = np.array(msg['data'], dtype=np.uint8).reshape((msg['metadata']['size_y'], msg['metadata']['size_x']))
+            # Debug: Print the structure of the received message
+            self.get_logger().info(f"Costmap message type: {type(msg)}")
+            self.get_logger().info(f"Costmap keys: {list(msg.keys()) if isinstance(msg, dict) else 'Not a dict'}")
+            
+            # Check if data is in the expected format
+            if 'data' not in msg or 'metadata' not in msg:
+                self.get_logger().error("Invalid costmap message format - missing 'data' or 'metadata' keys")
+                return []
+            
+            costmap_data = msg['data']
+            self.get_logger().info(f"Data type: {type(costmap_data)}, length: {len(costmap_data) if hasattr(costmap_data, '__len__') else 'Unknown'}")
+            
+            # Log first few elements for debugging
+            if hasattr(costmap_data, '__len__') and len(costmap_data) > 0:
+                sample_size = min(3, len(costmap_data))
+                self.get_logger().info(f"First {sample_size} data elements: {costmap_data[:sample_size]}")
+            
+            # Handle different data formats
+            if isinstance(costmap_data, list):
+                # If data is a list of numbers
+                try:
+                    data = np.array(costmap_data, dtype=np.uint8)
+                except (ValueError, TypeError) as e:
+                    self.get_logger().error(f"Cannot convert costmap data to numpy array: {e}")
+                    # Try to extract numerical values if data contains dicts
+                    if len(costmap_data) > 0 and isinstance(costmap_data[0], dict):
+                        self.get_logger().info("Data appears to be list of dicts, attempting to extract values...")
+                        # Try common keys like 'value', 'cost', 'data'
+                        for key in ['value', 'cost', 'data', 'cell_value']:
+                            if key in costmap_data[0]:
+                                try:
+                                    data = np.array([cell[key] for cell in costmap_data], dtype=np.uint8)
+                                    self.get_logger().info(f"Successfully extracted data using key '{key}'")
+                                    break
+                                except Exception:
+                                    continue
+                        else:
+                            self.get_logger().error("Could not extract numerical data from dict format")
+                            return []
+                    else:
+                        return []
+            else:
+                self.get_logger().error(f"Unexpected data type: {type(costmap_data)}")
+                return []
+            
+            # Reshape the data
+            try:
+                data = data.reshape((msg['metadata']['size_y'], msg['metadata']['size_x']))
+            except ValueError as e:
+                self.get_logger().error(f"Cannot reshape data: {e}")
+                self.get_logger().error(f"Data shape: {data.shape}, Expected: ({msg['metadata']['size_y']}, {msg['metadata']['size_x']})")
+                return []
             
             # Extract metadata for coordinate conversion
             resolution = msg['metadata']['resolution']
@@ -379,9 +434,11 @@ class CoverageNavigatorTester(Node):
             unique_values = np.unique(data)
             self.get_logger().info(f'Unique costmap values: {unique_values}')
             
+            return free_contours_world
+            
         except Exception as e:
             self.get_logger().error(f'Error processing costmap: {str(e)}')
-        return free_contours_world
+            return []
 
     def crop_and_find_free_space(self, user_polygon):
         """
