@@ -86,7 +86,8 @@ class CoverageNavigatorTester(Node):
             if res.status_code == 200:
                 self.get_logger().info('GetCostmap service call succeeded.')
                 data = res.json()
-                self.current_costmap = data['data']
+                # Store the full response for processing
+                self.current_costmap = data
                 free_contours_world = self.process_costmap(data)
                 
                 # Check if we got valid contours
@@ -147,10 +148,26 @@ class CoverageNavigatorTester(Node):
             self.get_logger().info(f"Costmap message type: {type(msg)}")
             self.get_logger().info(f"Costmap keys: {list(msg.keys()) if isinstance(msg, dict) else 'Not a dict'}")
             
+            # Handle different response formats from the HTTP service
+            # The service may return {'code': 0, 'data': actual_costmap_data}
+            actual_costmap_data = msg
+            if 'code' in msg and 'data' in msg:
+                # HTTP service wrapper format
+                if msg['code'] == 0:
+                    actual_costmap_data = msg['data']
+                    self.get_logger().info("Using costmap data from HTTP service wrapper")
+                else:
+                    self.get_logger().error(f"HTTP service returned error code: {msg['code']}")
+                    return []
+            
             # Check if data is in the expected format
-            if 'data' not in msg or 'metadata' not in msg:
+            if 'data' not in actual_costmap_data or 'metadata' not in actual_costmap_data:
                 self.get_logger().error("Invalid costmap message format - missing 'data' or 'metadata' keys")
+                self.get_logger().error(f"Available keys in costmap data: {list(actual_costmap_data.keys())}")
                 return []
+            
+            # Use the actual costmap data for processing
+            msg = actual_costmap_data
             
             costmap_data = msg['data']
             self.get_logger().info(f"Data type: {type(costmap_data)}, length: {len(costmap_data) if hasattr(costmap_data, '__len__') else 'Unknown'}")
@@ -462,11 +479,41 @@ class CoverageNavigatorTester(Node):
             costmap_msg = self.current_costmap
             self.get_logger().info(f'Cropping costmap to user polygon: {user_polygon}')
             
+            # Handle HTTP service wrapper format
+            actual_costmap_data = costmap_msg
+            if 'code' in costmap_msg and 'data' in costmap_msg:
+                if costmap_msg['code'] == 0:
+                    actual_costmap_data = costmap_msg['data']
+                else:
+                    self.get_logger().error(f"Costmap data has error code: {costmap_msg['code']}")
+                    return None
+            
             # Extract costmap data
-            data = np.array(costmap_msg['data'], dtype=np.uint8).reshape((costmap_msg['metadata']['size_y'], costmap_msg['metadata']['size_x']))
-            resolution = costmap_msg['metadata']['resolution']
-            origin_x = costmap_msg['metadata']['origin']['position']['x']
-            origin_y = costmap_msg['metadata']['origin']['position']['y']
+            costmap_data = actual_costmap_data['data']
+            # Handle different data formats (similar to process_costmap)
+            if isinstance(costmap_data, list) and len(costmap_data) > 0:
+                if isinstance(costmap_data[0], dict):
+                    # Try to extract from dict format
+                    for key in ['value', 'cost', 'data', 'cell_value']:
+                        if key in costmap_data[0]:
+                            try:
+                                data = np.array([cell[key] for cell in costmap_data], dtype=np.uint8)
+                                break
+                            except Exception:
+                                continue
+                    else:
+                        self.get_logger().error("Could not extract numerical data from dict format")
+                        return None
+                else:
+                    data = np.array(costmap_data, dtype=np.uint8)
+            else:
+                self.get_logger().error(f"Unexpected costmap data format: {type(costmap_data)}")
+                return None
+            
+            data = data.reshape((actual_costmap_data['metadata']['size_y'], actual_costmap_data['metadata']['size_x']))
+            resolution = actual_costmap_data['metadata']['resolution']
+            origin_x = actual_costmap_data['metadata']['origin']['position']['x']
+            origin_y = actual_costmap_data['metadata']['origin']['position']['y']
 
             self.get_logger().info(f'Costmap resolution: {resolution} m/cell, origin: ({origin_x}, {origin_y})')
             
@@ -476,14 +523,14 @@ class CoverageNavigatorTester(Node):
                 pixel_x = int((point[0] - origin_x) / resolution)
                 pixel_y = int((point[1] - origin_y) / resolution)
                 # Clamp to valid pixel range
-                pixel_x = max(0, min(pixel_x, costmap_msg['metadata']['size_x'] - 1))
-                pixel_y = max(0, min(pixel_y, costmap_msg['metadata']['size_y'] - 1))
+                pixel_x = max(0, min(pixel_x, actual_costmap_data['metadata']['size_x'] - 1))
+                pixel_y = max(0, min(pixel_y, actual_costmap_data['metadata']['size_y'] - 1))
                 user_polygon_pixels.append([pixel_x, pixel_y])
             
             self.get_logger().info(f'User polygon in pixels: {user_polygon_pixels}')
             
             # Create a mask for the user polygon
-            mask = np.zeros((costmap_msg['metadata']['size_y'], costmap_msg['metadata']['size_x']), dtype=np.uint8)
+            mask = np.zeros((actual_costmap_data['metadata']['size_y'], actual_costmap_data['metadata']['size_x']), dtype=np.uint8)
             polygon_contour = np.array(user_polygon_pixels, dtype=np.int32)
             cv2.fillPoly(mask, [polygon_contour], 255)
             

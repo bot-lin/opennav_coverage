@@ -4,15 +4,35 @@
 The costmap processing was failing with the following errors:
 1. `int() argument must be a string, a bytes-like object or a real number, not 'dict'`
 2. `cannot access local variable 'free_contours_world' where it is not associated with a value`
+3. `Invalid costmap message format - missing 'data' or 'metadata' keys`
 
 These errors occurred because:
-1. The costmap data returned by the HTTP service had an unexpected format (list of dictionaries instead of list of numbers)
-2. The `free_contours_world` variable wasn't initialized before the try block, causing issues when exceptions occurred
+1. The HTTP service returns data in a wrapper format: `{'code': 0, 'data': actual_costmap}`
+2. The costmap data contained dictionaries instead of plain numbers in some cases
+3. The `free_contours_world` variable wasn't initialized before the try block
 
 ## Solution
 Applied several fixes to handle different costmap data formats robustly:
 
-### 1. Added Debug Logging
+### 1. Handle HTTP Service Wrapper Format
+```python
+# Handle different response formats from the HTTP service
+# The service may return {'code': 0, 'data': actual_costmap_data}
+actual_costmap_data = msg
+if 'code' in msg and 'data' in msg:
+    # HTTP service wrapper format
+    if msg['code'] == 0:
+        actual_costmap_data = msg['data']
+        self.get_logger().info("Using costmap data from HTTP service wrapper")
+    else:
+        self.get_logger().error(f"HTTP service returned error code: {msg['code']}")
+        return []
+
+# Use the actual costmap data for processing
+msg = actual_costmap_data
+```
+
+### 2. Added Debug Logging
 ```python
 # Debug: Print the structure of the received message
 self.get_logger().info(f"Costmap message type: {type(msg)}")
@@ -24,7 +44,7 @@ if hasattr(costmap_data, '__len__') and len(costmap_data) > 0:
     self.get_logger().info(f"First {sample_size} data elements: {costmap_data[:sample_size]}")
 ```
 
-### 2. Robust Data Format Handling
+### 3. Robust Data Format Handling
 ```python
 # Handle different data formats
 if isinstance(costmap_data, list):
@@ -48,7 +68,7 @@ if isinstance(costmap_data, list):
                 return []
 ```
 
-### 3. Variable Initialization
+### 4. Variable Initialization
 ```python
 def process_costmap(self, msg):
     free_contours_world = []  # Initialize at the start
@@ -61,7 +81,7 @@ def process_costmap(self, msg):
         return []  # Return empty list on error
 ```
 
-### 4. Enhanced Error Handling in Service Call
+### 5. Enhanced Error Handling in Service Call
 ```python
 def call_get_costmap_service(self):
     try:
@@ -79,7 +99,7 @@ def call_get_costmap_service(self):
         return None
 ```
 
-### 5. Data Validation
+### 6. Data Validation
 ```python
 # Reshape the data with validation
 try:
@@ -100,9 +120,14 @@ python3 -m py_compile opennav_coverage_demo/opennav_coverage_demo/demo_coverage_
 ```
 
 The fix now handles:
+- HTTP service wrapper format (`{'code': 0, 'data': costmap}`)  
 - Different costmap data formats (list of numbers vs list of dictionaries)
 - Proper error handling and logging for debugging
 - Variable initialization to prevent unbound variable errors
 - Validation of data shapes and formats before processing
 
-The system will now provide detailed debug information to help identify the exact format of costmap data being received, and attempt to extract numerical values from various possible dictionary structures.
+The system will now:
+- Automatically detect and handle HTTP service wrapper responses
+- Provide detailed debug information to identify exact costmap data formats
+- Attempt to extract numerical values from various dictionary structures
+- Process both `call_get_costmap_service()` and `crop_and_find_free_space()` with the same robust format handling
