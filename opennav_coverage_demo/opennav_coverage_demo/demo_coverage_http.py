@@ -536,8 +536,7 @@ class CoverageNavigatorTester(Node):
             cv2.putText(image, subtitle, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
             
             # Save image
-            timestamp = int(time.time())
-            filename = f"{filename_prefix}_{timestamp}.png"
+            filename = f"{filename_prefix}.png"
             cv2.imwrite(filename, image)
             self.get_logger().info(f"Saved field visualization: {filename}")
             self.get_logger().info(f"Field area: {area_m2:.1f} m², {len(field_coords)} vertices")
