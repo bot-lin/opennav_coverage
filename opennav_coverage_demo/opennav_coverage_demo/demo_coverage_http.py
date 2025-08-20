@@ -744,7 +744,7 @@ class CoverageNavigatorTester(Node):
                 return []
 
 
-    def sendTaskRequest(self, waypoints, wait_at_first_waypoint=False):
+    def sendTaskRequest(self, waypoints, wait_at_first_waypoint=False, path_planner='straight'):
         flask_ros_url = 'http://127.0.0.1:1234'
         ros_data = {
             "wps": [],
@@ -774,7 +774,7 @@ class CoverageNavigatorTester(Node):
                 'is_dest': True,
                 'precise_xy': 0.08,
                 'precise_rad': 6.28,
-                'nav_type': 'auto',
+                'nav_type': path_planner,
                 'actions': actions,
                 'is_reverse': False,
                 'inflation_radius': 1.1,
@@ -1036,12 +1036,13 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
         def handle_start_navigation():
             data = request.get_json()
             wait_at_first_waypoint = data.get('wait_at_first_waypoint', False)
+            path_planner = data.get('path_planner', 'straight')
             if self.current_waypoints is None or len(self.current_waypoints) == 0:
                 return jsonify({
                     "code": 1,
                     "error": "没有可用的导航路径，请先调用 /navigate_coverage 接口"
                 }), 400
-            result = self.sendTaskRequest(self.current_waypoints, wait_at_first_waypoint=wait_at_first_waypoint)
+            result = self.sendTaskRequest(self.current_waypoints, wait_at_first_waypoint=wait_at_first_waypoint, path_planner=path_planner)
             if result != 0:
                 return jsonify({
                     "code": 1,
