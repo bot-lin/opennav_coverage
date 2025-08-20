@@ -923,6 +923,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 else:
                     # Get the largest free space from costmap analysis
                     field = self.call_get_costmap_service()
+                    field = None
                     if field:
                         self.visualize_field_polygon(field, "global_free_space")
                         self.get_logger().info(f"Using global free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
