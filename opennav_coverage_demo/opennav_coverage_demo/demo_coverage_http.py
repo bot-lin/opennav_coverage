@@ -754,11 +754,13 @@ class CoverageNavigatorTester(Node):
         index = 0
         for waypoint in waypoints:
             actions = []
+            precise_xy = 0.05
             if index == 0 and wait_at_first_waypoint:
                 actions.append({
                     'name': 'wait_for_command',
                     'id': 13
                 })
+                precise_xy = 0.12
             wp = {
                 'pose': {
                     'position': {
@@ -771,7 +773,7 @@ class CoverageNavigatorTester(Node):
                     }
                 },
                 'is_dest': True,
-                'precise_xy': 0.08,
+                'precise_xy': precise_xy,
                 'precise_rad': 6.28,
                 'nav_type': path_planner,
                 'actions': actions,
