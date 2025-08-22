@@ -455,6 +455,7 @@ class BasicNavigator(Node):
         goal_msg.swath_mode.step_angle = step_angle
         goal_msg.swath_mode.mode = swath_mode
         goal_msg.swath_mode.objective = swath_objective
+        goal_msg.generate_headland = False
 
         self.info('Getting Full Coverage path...')
         send_goal_future = self.compute_full_cooverage_path_client.send_goal_async(
