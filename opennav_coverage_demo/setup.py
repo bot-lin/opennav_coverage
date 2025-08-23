@@ -15,8 +15,6 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name), glob('launch/*')),
-        (os.path.join('share', package_name), glob('world/*')),
-        (os.path.join('share', package_name), glob('params/*')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
@@ -27,9 +25,7 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-                'demo_coverage = opennav_coverage_demo.demo_coverage:main',
                 'demo_coverage_http = opennav_coverage_demo.demo_coverage_http:main',
-                'demo_row_coverage = opennav_coverage_demo.demo_row_coverage:main',
         ],
     },
 )

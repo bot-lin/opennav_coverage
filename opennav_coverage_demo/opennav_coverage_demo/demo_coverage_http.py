@@ -26,10 +26,7 @@ from flask import Flask, request, jsonify, Response
 from action_msgs.msg import GoalStatus
 from geometry_msgs.msg import Point32, Polygon
 from lifecycle_msgs.srv import GetState
-from opennav_coverage_msgs.action import NavigateCompleteCoverage
-from nav2_msgs.msg import BehaviorTreeLog
 import rclpy
-from rclpy.action import ActionClient
 from rclpy.duration import Duration
 from rclpy.node import Node
 from rcl_interfaces.msg import Parameter
@@ -38,49 +35,22 @@ import math
 
 import cv2
 import numpy as np
+import fields2cover as f2c
 
-from opennav_coverage_demo.robot_nagivator import BasicNavigator
+# from opennav_coverage_demo.robot_nagivator import BasicNavigator
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-
-
-class TaskResult(Enum):
-    UNKNOWN = 0
-    SUCCEEDED = 1
-    CANCELED = 2
-    FAILED = 3
 
 
 class CoverageNavigatorTester(Node):
     # 这里保留您现有的CoverageNavigatorTester类的代码
     def __init__(self):
         super().__init__(node_name='coverage_navigator_tester')
-        self.goal_handle = None
-        self.result_future = None
-        self.status = None
-        self.feedback = None
-        self.current_waypoints = None
-        self.resume_required = False
-        self._action_lock = threading.Lock()  # Thread safety lock
-
-        self.create_subscription(BehaviorTreeLog, '/behavior_tree_log',
-                                 self.behavior_tree_log_callback, 10)
-
-        self.coverage_client = ActionClient(self, NavigateCompleteCoverage,
-                                            'navigate_complete_coverage')
         self.current_costmap = None  # Initialize costmap storage   
-        
-        # Initialize parameter client for updating ROS2 parameters
-        self.param_client = self.create_client(SetParametersAtomically, '/coverage_server/set_parameters_atomically')
-        self.get_logger().info('Checking for coverage_server parameter service...')
-        if not self.param_client.wait_for_service(timeout_sec=5.0):
-            self.get_logger().warn('Coverage server parameter service not available. Parameter updates will be attempted when needed.')
-        else:
-            self.get_logger().info('Coverage server parameter service is ready.')
-
+    
     def call_get_costmap_service(self):
         try:
-            url = "http://127.0.0.1:1234/get_global_costmap"
+            url = "http://10.54.65.188:1234/get_global_costmap"
             self.get_logger().info('Calling GetCostmap service...')
             res = requests.get(url)
             if res.status_code == 200:
@@ -699,49 +669,8 @@ class CoverageNavigatorTester(Node):
 
 
 
-    def behavior_tree_log_callback(self, msg):
-        for log in msg.event_log:
-            if log.node_name == "Wait":
-                self.resume_required = True
-                return
-        self.resume_required = False
-
-
     def destroy_node(self):
-        self.coverage_client.destroy()
         super().destroy_node()
-
-    def toPolygon(self, field):
-        poly = Polygon()
-        for coord in field:
-            pt = Point32()
-            pt.x = coord[0]
-            pt.y = coord[1]
-            poly.points.append(pt)
-        return poly
-
-    def navigateCoverage(self, field, swath_angle=0.0, mode='SET_ANGLE', step_angle=0.0, objective=""):
-        """Send a `NavToPose` action request."""
-        with self._action_lock:  # Thread-safe access to action client
-            print("Waiting for 'NavigateCompleteCoverage' action server")
-            while not self.coverage_client.wait_for_server(timeout_sec=1.0):
-                print('"NavigateCompleteCoverage" action server not available, waiting...')
-            
-            try:
-                self.current_waypoints, path = self.robot_navigator.getFullCoveragePath(
-                    [self.toPolygon(field)],
-                    best_angle = swath_angle,
-                    swath_mode = mode,
-                    step_angle = step_angle,
-                    swath_objective = objective
-                )
-                return path
-            except Exception as e:
-                self.get_logger().error(f"Error in getFullCoveragePath: {str(e)}")
-                # Fallback: return empty path if robot_navigator fails
-                self.current_waypoints = []
-                return []
-
 
     def sendTaskRequest(self, waypoints, wait_at_first_waypoint=False, path_planner='straight'):
         flask_ros_url = 'http://127.0.0.1:1234'
@@ -788,48 +717,6 @@ class CoverageNavigatorTester(Node):
         response = requests.post(url, json=ros_data)
         return response.json()['code']
 
-    def isTaskComplete(self):
-        """Check if the task request of any type is complete yet."""
-        if not self.result_future:
-            # task was cancelled or completed
-            return True
-        
-        # Use done() instead of spin_until_future_complete for thread safety
-        if self.result_future.done():
-            result = self.result_future.result()
-            if result:
-                self.status = result.status
-                if self.status != GoalStatus.STATUS_SUCCEEDED:
-                    print(f'Task with failed with status code: {self.status}')
-                    return True
-                print('Task succeeded!')
-                return True
-            else:
-                print('Task failed - no result available')
-                return True
-        else:
-            # Still processing, not complete yet
-            return False
-
-    def _feedbackCallback(self, msg):
-        self.feedback = msg.feedback
-        return
-
-    def getFeedback(self):
-        """Get the pending action feedback message."""
-        return self.feedback
-
-    def getResult(self):
-        """Get the pending action result message."""
-        if self.status == GoalStatus.STATUS_SUCCEEDED:
-            return TaskResult.SUCCEEDED
-        elif self.status == GoalStatus.STATUS_ABORTED:
-            return TaskResult.FAILED
-        elif self.status == GoalStatus.STATUS_CANCELED:
-            return TaskResult.CANCELED
-        else:
-            return TaskResult.UNKNOWN
-
     def startup(self, node_name='bt_navigator'):
         # Waits for the node within the tester namespace to become active
         print(f'Waiting for {node_name} to become active..')
@@ -857,26 +744,65 @@ class CoverageNavigatorTester(Node):
             time.sleep(2)
         return
 
-    def cancelTask(self):
-        """Cancel pending task request of any type."""
-        with self._action_lock:  # Thread-safe access to action client
-            self.get_logger().info('Canceling current task.')
-            if self.result_future and self.goal_handle:
-                try:
-                    future = self.goal_handle.cancel_goal_async()
-                    # Wait for cancellation to complete with timeout
-                    timeout_count = 0
-                    while not future.done() and timeout_count < 50:  # 5 second timeout
-                        time.sleep(0.1)
-                        timeout_count += 1
-                    
-                    if future.done():
-                        self.get_logger().info('Task cancellation completed.')
-                    else:
-                        self.get_logger().warn('Task cancellation timed out.')
-                except Exception as e:
-                    self.get_logger().error(f"Error cancelling task: {str(e)}")
-            return True
+    def toPolygon(self, field, rings):
+        points = []
+        for coord in field:
+            p = f2c.Point(coord[0], coord[1])
+            points.append(p)
+        cell = f2c.Cell(f2c.LinearRing(f2c.VectorPoint(points)))
+        for ring in rings:
+            r = f2c.LinearRing()
+            for coord in ring:
+                p = f2c.Point(coord[0], coord[1])
+                r.addPoint(p)
+            cell.addRing(r)
+        cells = f2c.Cells(cell)
+        return cells
+    
+    def generate_coverage_path(self, 
+                               cells,
+                               robot_width, 
+                               robot_coverage_width,
+                               robot_min_turning_radius=1e-8,
+                               robot_max_diff_curvature=1e8,
+                               robot_cruise_vel=0.5,
+                               robot_turn_vel=0.5,
+                               use_decomposition=True,
+                               decomposition_type='Trapezoidal',
+                               headland_width=1.0
+                               ):
+        robot = f2c.Robot(robot_width, robot_coverage_width)
+        robot.setMinTurningRadius(robot_min_turning_radius)
+        robot.setMaxDiffCurv(robot_max_diff_curvature)
+        robot.setCruiseVel(robot_cruise_vel)
+        robot.setTurnVel(robot_turn_vel)
+        r_w = robot.getCovWidth()
+        const_hl = f2c.HG_Const_gen()
+        bf = f2c.SG_BruteForce()
+        obj = f2c.OBJ_NSwathModified()
+
+        # Step 1: Decomposition
+        if use_decomposition:
+            if decomposition_type == 'Boustrophedon':
+                decomp = f2c.DECOMP_BoustrophedonDecomp()
+            else:
+                decomp = f2c.DECOMP_TrapezoidalDecomp()
+                decomp.setSplitAngle(0.5*math.pi)
+            cells = decomp.decompose(cells) 
+
+        # Step 2: Generate headlands 
+        no_hl_decomp = const_hl.generateHeadlands(cells, headland_width)
+
+        # Step 3: Generate swaths
+        swaths_decomp = bf.generateBestSwaths(obj, r_w, no_hl_decomp.getGeometry(0))
+        self.get_logger().info(f'生成 {swaths_decomp.size()} 组覆盖路径')
+        f2c.Visualizer.figure()
+        f2c.Visualizer.plot(cells)
+        f2c.Visualizer.plot(swaths_decomp)
+
+        f2c.Visualizer.save("Tutorial_image.png")
+
+
 
 
 class CoverageNavigatorServer(CoverageNavigatorTester):
@@ -890,7 +816,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
         self.current_repeat = 0
         self.cancel_required = False
         self.config_file = '/data/params/coverage_params.yaml'  # Will be set when needed
-        self.robot_navigator = BasicNavigator()
+        # self.robot_navigator = BasicNavigator()
         self.setup_routes()
         
     def setup_routes(self):
@@ -985,13 +911,41 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 # 如果有正在运行的任务，先取消它
                 if self.task_thread and self.task_thread.is_alive():
                     return jsonify({"code": 1,"error": "已有导航任务正在运行中"}), 409
+                
+                cells = self.toPolygon(field, data['rings'])
+                self.generate_coverage_path(
+                    cells=cells,
+                    robot_width= data.get('robot_width', 1.0),
+                    robot_coverage_width= data.get('robot_coverage_width', 1.0),
+                    robot_min_turning_radius= data.get('robot_min_turning_radius', 1e-8),
+                    robot_max_diff_curvature= data.get('robot_max_diff_curvature', 1e8),
+                    robot_cruise_vel= data.get('robot_cruise_vel', 0.5),
+                    robot_turn_vel= data.get('robot_turn_vel', 0.5),
+                    use_decomposition= data.get('use_decomposition', True),
+                    decomposition_type= data.get('decomposition_type', 'Trapezoidal'),
+                    headland_width= data.get('headland_width', 1.0)
+
+                )
+
+                    
+                
+
+
+
+                # for swaths in swaths_decomp:
+                #     for swath in swaths:
+                #         self.get_logger().info(f'Swath from ({swath.start.x:.2f}, {swath.start.y:.2f}) to ({swath.end.x:.2f}, {swath.end.y:.2f})')
+
+
+                # no_hl_wo_decomp = const_hl.generateHeadlands(cells, 3.0 * r_w)
+
                     
                 # 在新线程中启动导航任务
                 # self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field, swath_angle, repeat_times, mode, objective, step_angle))
                 # self.task_thread.start()
-                path = self._run_navigation_task(field, swath_angle, repeat_times, mode, objective, step_angle)
+                # path = self._run_navigation_task(field, swath_angle, repeat_times, mode, objective, step_angle)
 
-                return jsonify({"code": 0, "path": path, "status": "导航任务已启动"}), 202
+                return jsonify({"code": 0, "path": None, "status": "导航任务已启动"}), 202
             except Exception as e:
                 logging.exception("处理导航请求时出错:")
                 return jsonify({"code": 1, "error": f"服务器处理请求时发生错误: {str(e)}"}), 500
@@ -1004,34 +958,6 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
             return response
 
-        @self.app.route('/status', methods=['GET'])
-        def handle_status():
-            """返回当前导航任务的状态。"""
-            if self.task_thread and self.task_thread.is_alive():
-                status = "运行中, 重复次数: {}/{}".format(self.current_repeat, self.repeat_times)
-                if self.feedback:
-                    remaining_time = Duration.from_msg(self.feedback.estimated_time_remaining).nanoseconds / 1e9
-                    return jsonify({
-                        "status": status,
-                        "resume_required": self.resume_required,
-                        "task_complete": False,
-                        "estimated_time_remaining": f"{remaining_time:.1f} 秒"
-                    })
-                return jsonify({"status": status})
-            else:
-                result = self.getResult()
-                status = "未知"
-                if result == TaskResult.SUCCEEDED:
-                    status = "成功"
-                elif result == TaskResult.CANCELED:
-                    status = "已取消"
-                elif result == TaskResult.FAILED:
-                    status = "失败"
-                    
-                return jsonify({
-                    "status": status,
-                    "task_complete": True
-                })
 
         @self.app.route('/start_navigation', methods=['POST'])
         def handle_start_navigation():
@@ -1055,325 +981,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 "status": "导航任务已开始"
             }), 200
 
-        @self.app.route('/cancel', methods=['GET'])
-        def handle_cancel():
-            """取消当前正在执行的导航任务。"""
-            try:
-                logging.info("收到取消导航任务请求")
-                
-                # 检查是否有正在运行的任务
-                if not self.task_thread or not self.task_thread.is_alive():
-                    return jsonify({
-                        "code": 1,
-                        "error": "当前没有正在运行的导航任务"
-                    }), 404
-                
-                # 尝试取消任务
-                cancel_result = self.cancelTask()
-                self.cancel_required = True
-                
-                if cancel_result:
-                    # 等待任务线程结束
-                    if self.task_thread:
-                        self.task_thread.join(timeout=2.0)  # 等待最多2秒
-                        
-                    return jsonify({
-                        "code": 0,
-                        "status": "导航任务已取消"
-                    }), 200
-                else:
-                    return jsonify({
-                        "code": 1,
-                        "error": "无法取消任务，可能已完成或发生错误"
-                    }), 500
-            except Exception as e:
-                logging.exception("处理取消请求时出错:")
-                return jsonify({
-                    "code": 1, 
-                    "error": f"服务器处理取消请求时发生错误: {str(e)}"
-                }), 500
 
-        # Simple robot parameter endpoints
-        @self.app.route('/robot_width', methods=['GET'])
-        def get_robot_width():
-            """获取机器人宽度"""
-            return self._get_parameter('robot_width')
 
-        @self.app.route('/robot_width', methods=['POST'])
-        def set_robot_width():
-            """设置机器人宽度"""
-            return self._set_parameter('robot_width')
-
-        @self.app.route('/operation_width', methods=['GET'])
-        def get_operation_width():
-            """获取作业宽度"""
-            return self._get_parameter('operation_width')
-
-        @self.app.route('/operation_width', methods=['POST'])
-        def set_operation_width():
-            """设置作业宽度"""
-            return self._set_parameter('operation_width')
-
-        @self.app.route('/min_turning_radius', methods=['GET'])
-        def get_min_turning_radius():
-            """获取最小转弯半径"""
-            return self._get_parameter('min_turning_radius')
-
-        @self.app.route('/min_turning_radius', methods=['POST'])
-        def set_min_turning_radius():
-            """设置最小转弯半径"""
-            return self._set_parameter('min_turning_radius')
-
-        @self.app.route('/headland_width', methods=['GET'])
-        def get_headland_width():
-            """获取地头宽度"""
-            return self._get_parameter('default_headland_width')
-
-        @self.app.route('/headland_width', methods=['POST'])
-        def set_headland_width():
-            """设置地头宽度"""
-            return self._set_parameter('default_headland_width')
-
-        @self.app.route('/swath_angle', methods=['GET'])
-        def get_swath_angle():
-            """获取扫描角度"""
-            return self._get_parameter('default_swath_angle')
-
-        @self.app.route('/swath_angle', methods=['POST'])
-        def set_swath_angle():
-            """设置扫描角度"""
-            return self._set_parameter('default_swath_angle')
-
-        @self.app.route('/allow_overlap', methods=['GET'])
-        def get_allow_overlap():
-            """获取是否允许重叠"""
-            return self._get_parameter('default_allow_overlap')
-
-        @self.app.route('/allow_overlap', methods=['POST'])
-        def set_allow_overlap():
-            """设置是否允许重叠"""
-            return self._set_parameter('default_allow_overlap')
-
-        @self.app.route('/config_file', methods=['POST'])
-        def set_config_file():
-            """设置配置文件路径"""
-            try:
-                if not request.is_json:
-                    return jsonify({"code": 1, "error": "请求必须是JSON格式"}), 400
-                
-                data = request.get_json()
-                file_path = data.get('file_path')
-                
-                if not file_path:
-                    return jsonify({"code": 1, "error": "缺少'file_path'字段"}), 400
-                
-                if not os.path.exists(file_path):
-                    return jsonify({"code": 1, "error": f"文件不存在: {file_path}"}), 404
-                
-                self.config_file = file_path
-                return jsonify({"code": 0, "message": "配置文件路径设置成功", "file_path": file_path})
-                
-            except Exception as e:
-                return jsonify({"code": 1, "error": f"设置配置文件时出错: {str(e)}"}), 500
-
-        # OPTIONS for all parameter endpoints
-        @self.app.route('/robot_width', methods=['OPTIONS'])
-        def handle_robot_width_options():
-            response = Response()
-            response.headers.add("Access-Control-Allow-Origin", "*")
-            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            return response
-
-        @self.app.route('/operation_width', methods=['OPTIONS'])
-        def handle_operation_width_options():
-            response = Response()
-            response.headers.add("Access-Control-Allow-Origin", "*")
-            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            return response
-
-        @self.app.route('/min_turning_radius', methods=['OPTIONS'])
-        def handle_min_turning_radius_options():
-            response = Response()
-            response.headers.add("Access-Control-Allow-Origin", "*")
-            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            return response
-
-        @self.app.route('/headland_width', methods=['OPTIONS'])
-        def handle_headland_width_options():
-            response = Response()
-            response.headers.add("Access-Control-Allow-Origin", "*")
-            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            return response
-
-        @self.app.route('/swath_angle', methods=['OPTIONS'])
-        def handle_swath_angle_options():
-            response = Response()
-            response.headers.add("Access-Control-Allow-Origin", "*")
-            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            return response
-
-        @self.app.route('/allow_overlap', methods=['OPTIONS'])
-        def handle_allow_overlap_options():
-            response = Response()
-            response.headers.add("Access-Control-Allow-Origin", "*")
-            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-            response.headers.add("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-            return response
-
-        @self.app.route('/config_file', methods=['OPTIONS'])
-        def handle_config_file_options():
-            response = Response()
-            response.headers.add("Access-Control-Allow-Origin", "*")
-            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
-            response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
-            return response
-
-    def _get_parameter(self, param_name):
-        """获取参数值的通用方法"""
-        try:
-            if not self.config_file:
-                return jsonify({"code": 1, "error": "请先设置配置文件路径"}), 400
-            
-            if not os.path.exists(self.config_file):
-                return jsonify({"code": 1, "error": f"配置文件不存在: {self.config_file}"}), 404
-            
-            with open(self.config_file, 'r', encoding='utf-8') as file:
-                config = yaml.safe_load(file)
-            
-            value = config.get('coverage_server', {}).get('ros__parameters', {}).get(param_name)
-            
-            if value is None:
-                return jsonify({"code": 1, "error": f"参数不存在: {param_name}"}), 404
-            
-            return jsonify({
-                "code": 0,
-                "parameter": param_name,
-                "value": value
-            })
-            
-        except Exception as e:
-            return jsonify({"code": 1, "error": f"获取参数时出错: {str(e)}"}), 500
-
-    def _set_parameter(self, param_name):
-        """设置参数值的通用方法"""
-        try:
-            if not self.config_file:
-                return jsonify({"code": 1, "error": "请先设置配置文件路径"}), 400
-            
-            if not request.is_json:
-                return jsonify({"code": 1, "error": "请求必须是JSON格式"}), 400
-            
-            data = request.get_json()
-            new_value = data.get('value')
-            
-            if new_value is None:
-                return jsonify({"code": 1, "error": "缺少'value'字段"}), 400
-            
-            if not os.path.exists(self.config_file):
-                return jsonify({"code": 1, "error": f"配置文件不存在: {self.config_file}"}), 404
-            
-            # 读取配置文件
-            with open(self.config_file, 'r', encoding='utf-8') as file:
-                config = yaml.safe_load(file) or {}
-            
-            # 确保结构存在
-            if 'coverage_server' not in config:
-                config['coverage_server'] = {}
-            if 'ros__parameters' not in config['coverage_server']:
-                config['coverage_server']['ros__parameters'] = {}
-            
-            # 设置新值
-            old_value = config['coverage_server']['ros__parameters'].get(param_name)
-            config['coverage_server']['ros__parameters'][param_name] = new_value
-            
-            # 写回文件
-            with open(self.config_file, 'w', encoding='utf-8') as file:
-                yaml.dump(config, file, default_flow_style=False, allow_unicode=True)
-            
-            # Also update the live ROS2 parameter
-            ros_param_success = self._update_ros2_parameter(param_name, new_value)
-            
-            response_data = {
-                "code": 0,
-                "message": "参数更新成功",
-                "parameter": param_name,
-                "old_value": old_value,
-                "new_value": new_value,
-                "ros2_parameter_updated": ros_param_success
-            }
-            
-            if not ros_param_success:
-                response_data["warning"] = "YAML文件已更新，但ROS2参数更新失败"
-            
-            return jsonify(response_data)
-            
-        except Exception as e:
-            return jsonify({"code": 1, "error": f"设置参数时出错: {str(e)}"}), 500
-
-    def _update_ros2_parameter(self, param_name, value):
-        """更新实时ROS2参数"""
-        try:
-            
-            # Create service request
-            request = SetParametersAtomically.Request()
-            data = Parameter()
-            data.name = param_name
-            if isinstance(value, bool):
-                data.value.type = 1
-                data.value.bool_value = value
-            elif isinstance(value, int):
-                data.value.type = 2
-                data.value.integer_value = value
-            elif isinstance(value, float):
-                data.value.type = 3
-                data.value.double_value = value
-            request.parameters = [data]
-            
-            # Call service asynchronously
-            future = self.param_client.call_async(request)
-            
-            # Wait for response with timeout
-            timeout_count = 0
-            while not future.done() and timeout_count < 20:  # 2 second timeout
-                time.sleep(0.1)
-                timeout_count += 1
-            
-            if future.done() and future.result() is not None:
-                response = future.result()
-                result = response.result
-                if result.successful:
-                    self.get_logger().info(f"Successfully updated ROS2 parameter '{param_name}' to {value}")
-                    return True
-                else:
-                    self.get_logger().error(f"Failed to update ROS2 parameter '{param_name}': {result.reason}")
-                    return False
-            else:
-                self.get_logger().error(f"Parameter service call timed out for '{param_name}'")
-                return False
-                
-        except Exception as e:
-            self.get_logger().error(f"Error updating ROS2 parameter '{param_name}': {str(e)}")
-            return False
-    
-    def _run_navigation_task(self, field, swath_angle, repeat_times=1, mode='SET_ANGLE', objective='', step_angle=0.0):
-        # """在单独的线程中运行导航任务。"""
-        # self.repeat_times = repeat_times
-        # for i in range(repeat_times):
-        #     self.current_repeat = i + 1
-        #     if self.cancel_required:
-        #         logging.info("取消请求已收到，停止导航任务。")
-        #         self.cancel_required = False
-        #         return
-        #     """在单独的线程中运行导航任务。"""
-        #     logging.info(f"开始导航任务，区域: {field}, 扫描角度: {swath_angle}")
-        return self.navigateCoverage(field, swath_angle, mode=mode, step_angle=step_angle, objective=objective)
-            
-        
     def run_server(self, host='0.0.0.0', port=1235):  # 修改端口为1235
         """启动HTTP服务器。"""
         logging.info(f"开启HTTP服务器在 http://{host}:{port}/")
