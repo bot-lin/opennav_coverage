@@ -36,6 +36,7 @@ import math
 import cv2
 import numpy as np
 import fields2cover as f2c
+from geometry_msgs.msg import Point32
 
 # from opennav_coverage_demo.robot_nagivator import BasicNavigator
 # 配置日志记录
@@ -762,23 +763,30 @@ class CoverageNavigatorTester(Node):
     def generate_coverage_path(self, 
                                cells,
                                robot_width, 
-                               robot_coverage_width,
+                               robot_op_width,
                                robot_min_turning_radius=1e-8,
                                robot_max_diff_curvature=1e8,
                                robot_cruise_vel=0.5,
                                robot_turn_vel=0.5,
                                use_decomposition=True,
                                decomposition_type='Trapezoidal',
-                               headland_width=1.0
+                               headland_width=1.0,
+                               swath_mode='BRUTE_FORCE',
+                               swath_step_angle=0.1,
+                               swath_obj="LENGTH",
+                               swath_allow_overlap=False,
+                               swath_set_angle=0.0,
+                               route_mode="AUTO",
+                               route_spiral=2,
+                               route_custom_order=[]
                                ):
-        robot = f2c.Robot(robot_width, robot_coverage_width)
+        robot = f2c.Robot(robot_width, robot_op_width)
         robot.setMinTurningRadius(robot_min_turning_radius)
         robot.setMaxDiffCurv(robot_max_diff_curvature)
         robot.setCruiseVel(robot_cruise_vel)
         robot.setTurnVel(robot_turn_vel)
-        r_w = robot.getCovWidth()
         const_hl = f2c.HG_Const_gen()
-        bf = f2c.SG_BruteForce()
+        
         obj = f2c.OBJ_NSwathModified()
 
         # Step 1: Decomposition
@@ -792,13 +800,79 @@ class CoverageNavigatorTester(Node):
 
         # Step 2: Generate headlands 
         no_hl_decomp = const_hl.generateHeadlands(cells, headland_width)
+        rem_area = f2c.OBJ_RemArea()
+        self.get_logger().info("The remaining area is {}, and with sign is {}".format(rem_area.computeCost(cells, no_hl_decomp), rem_area.computeCostWithMinimizingSign(cells, no_hl_decomp)))
 
         # Step 3: Generate swaths
-        swaths_decomp = bf.generateBestSwaths(obj, r_w, no_hl_decomp.getGeometry(0))
-        self.get_logger().info(f'生成 {swaths_decomp.size()} 组覆盖路径')
+        bf = f2c.SG_BruteForce()
+        bf.setAllowOverlap(swath_allow_overlap)
+        coverage_width = robot.getCovWidth()
+        if swath_mode == 'BRUTE_FORCE':
+            bf.setStepAngle(swath_step_angle)
+            if swath_obj == 'LENGTH':
+                obj = f2c.OBJ_SwathLength()
+            elif swath_obj == 'NUMBER':
+                obj = f2c.OBJ_NSwath()
+            elif swath_obj == 'NUMBER_MODIFIED':
+                obj = f2c.OBJ_NSwathModified()
+            elif swath_obj == 'COVERAGE':
+                obj = f2c.OBJ_FieldCoverage()
+       
+            swaths = bf.generateBestSwaths(obj, coverage_width, no_hl_decomp)
+        elif swath_mode == 'SET_ANGLE':
+            swaths = bf.generateSwaths(swath_set_angle, coverage_width, no_hl_decomp)   
+        self.get_logger().info(f'生成 {swaths.size()} 组覆盖路径')
+        swath_length = f2c.OBJ_SwathLength()
+        self.get_logger().info(f'覆盖路径总长度约为 {swath_length.computeCost(no_hl_decomp, swaths):.2f} 米')  
+
+        # Step 4: Plan route
+        if route_mode == "AUTO":    
+            route_planner = f2c.RP_RoutePlannerBase()
+            route = route_planner.genRoute(no_hl_decomp, swaths)
+        elif route_mode == "BOUSTROPHEDON":
+            route_planner = f2c.RP_Boustrophedon()
+            route = route_planner.genSortedSwaths(swaths)
+        elif route_mode == "SNAKE":
+            route_planner = f2c.RP_Snake()
+            route = route_planner.genSortedSwaths(swaths)
+        elif route_mode == "SPIRAL":
+            route_planner = f2c.RP_Spiral(route_spiral)
+            route = route_planner.genSortedSwaths(swaths)
+        elif route_mode == "CUSTOM":
+            route_planner = f2c.RP_CustomOrder(route_custom_order)
+            route = route_planner.genSortedSwaths(swaths)
+        else:
+            self.get_logger().error(f"未知的路线模式: {route_mode}, 使用自动模式")
+            route_planner = f2c.RP_RoutePlannerBase()
+            route = route_planner.genRoute(no_hl_decomp, swaths)
+        length = route.length()
+        self.get_logger().info(f'规划的路径总长度约为 {length:.2f} 米')
+        vector_swaths = route.getVectorSwaths()
+        size = vector_swaths.size()
+        self.get_logger().info(f'路径包含 {size} 条覆盖路径段')
+        self.current_waypoints = []
+        for i in range(size):
+            size_swaths = vector_swaths[i].size()
+            swaths = vector_swaths[i]
+            for j in range(size_swaths):
+                swath = swaths.at(j)
+                 # Log start and end points of each swath
+                
+                start_point = swath.startPoint()
+                point = Point32(x=start_point.X(), y=start_point.Y(), z=0.0)
+                self.current_waypoints.append(point)
+                end_point = swath.endPoint()
+                point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
+                self.current_waypoints.append(point)
+                self.get_logger().info(f'Swath {i}-{j}: Start({start_point.X():.2f}, {start_point.Y():.2f}) End({end_point.X():.2f}, {end_point.Y():.2f})')
+        # Step 5: Plan path
+
+
+
         f2c.Visualizer.figure()
         f2c.Visualizer.plot(cells)
-        f2c.Visualizer.plot(swaths_decomp)
+        # f2c.Visualizer.plot(swaths)
+        f2c.Visualizer.plot(route)
 
         f2c.Visualizer.save("Tutorial_image.png")
 
@@ -811,11 +885,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
     def __init__(self):
         super().__init__()
         self.app = Flask(__name__)
-        self.task_thread = None
         self.repeat_times = 1
         self.current_repeat = 0
-        self.cancel_required = False
-        self.config_file = '/data/params/coverage_params.yaml'  # Will be set when needed
         # self.robot_navigator = BasicNavigator()
         self.setup_routes()
         
@@ -906,24 +977,27 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 else:
                     repeat_times = 1
 
-                
-                    
-                # 如果有正在运行的任务，先取消它
-                if self.task_thread and self.task_thread.is_alive():
-                    return jsonify({"code": 1,"error": "已有导航任务正在运行中"}), 409
-                
+
                 cells = self.toPolygon(field, data['rings'])
                 self.generate_coverage_path(
                     cells=cells,
                     robot_width= data.get('robot_width', 1.0),
-                    robot_coverage_width= data.get('robot_coverage_width', 1.0),
+                    robot_op_width= data.get('robot_op_width', 1.0),
                     robot_min_turning_radius= data.get('robot_min_turning_radius', 1e-8),
                     robot_max_diff_curvature= data.get('robot_max_diff_curvature', 1e8),
                     robot_cruise_vel= data.get('robot_cruise_vel', 0.5),
                     robot_turn_vel= data.get('robot_turn_vel', 0.5),
                     use_decomposition= data.get('use_decomposition', True),
                     decomposition_type= data.get('decomposition_type', 'Trapezoidal'),
-                    headland_width= data.get('headland_width', 1.0)
+                    headland_width= data.get('headland_width', 1.0),
+                    swath_allow_overlap= data.get('swath_allow_overlap', False),
+                    swath_mode= mode,
+                    swath_set_angle= swath_angle,
+                    swath_step_angle= step_angle,
+                    swath_obj= objective,
+                    route_mode= data.get('route_mode', 'AUTO'),
+                    route_spiral= data.get('route_spiral', 2),
+                    route_custom_order= data.get('route_custom_order', [])
 
                 )
 
