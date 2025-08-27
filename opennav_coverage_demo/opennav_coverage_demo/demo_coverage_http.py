@@ -51,7 +51,7 @@ class CoverageNavigatorTester(Node):
     
     def call_get_costmap_service(self):
         try:
-            url = "http://10.54.65.188:1234/get_global_costmap"
+            url = "http://127.0.0.1:1234/get_global_costmap"
             self.get_logger().info('Calling GetCostmap service...')
             res = requests.get(url)
             if res.status_code == 200:
@@ -59,21 +59,14 @@ class CoverageNavigatorTester(Node):
                 data = res.json()
                 # Store the full response for processing
                 self.current_costmap = data
-                free_contours_world = self.process_costmap(data)
-                
-                # Check if we got valid contours
-                if free_contours_world and len(free_contours_world) > 0:
-                    return free_contours_world[0]['world_coordinates']
-                else:
-                    self.get_logger().warn('No free contours found in costmap')
-                    return None
+                return True
             else:
                 self.get_logger().error(f'GetCostmap service call failed with status code: {res.status_code}')
-                return None
+                return False
                   
         except Exception as e:
             self.get_logger().error(f'Error calling service: {str(e)}')
-            return None
+            return False
 
     def pixel_to_world(self, pixel_x, pixel_y, resolution, origin_x, origin_y):
         """
@@ -428,13 +421,14 @@ class CoverageNavigatorTester(Node):
             self.get_logger().error(f'Error processing costmap: {str(e)}')
             return []
 
-    def visualize_field_polygon(self, field_coords, filename_prefix="selected_field"):
+    def visualize_field_polygon(self, field_coords, filename_prefix="selected_field", obstacles_polygons=None):
         """
-        Visualize the field polygon for debugging purposes.
+        Visualize the field polygon and obstacles for debugging purposes.
         
         Args:
             field_coords: List of [x, y] coordinates defining the field boundary
             filename_prefix: Prefix for the saved image file
+            obstacles_polygons: List of obstacle polygons, each as a list of [x, y] coordinates
         """
         try:
             if not field_coords or len(field_coords) < 3:
@@ -479,6 +473,28 @@ class CoverageNavigatorTester(Node):
             cv2.fillPoly(image, [image_coords], (200, 255, 200))  # Light green fill
             cv2.polylines(image, [image_coords], True, (0, 150, 0), 3)  # Dark green border
             
+            # Draw obstacles if provided
+            if obstacles_polygons:
+                self.get_logger().info(f"Drawing {len(obstacles_polygons)} obstacles")
+                for i, obstacle in enumerate(obstacles_polygons):
+                    # Convert obstacle coordinates to image coordinates
+                    obstacle_image_coords = []
+                    for coord in obstacle:
+                        img_x, img_y = world_to_image(coord[0], coord[1])
+                        obstacle_image_coords.append([img_x, img_y])
+                    
+                    obstacle_coords = np.array(obstacle_image_coords, dtype=np.int32)
+                    if len(obstacle_coords) >= 3:  # Valid polygon
+                        cv2.fillPoly(image, [obstacle_coords], (100, 100, 100))  # Dark gray fill for obstacles
+                        cv2.polylines(image, [obstacle_coords], True, (50, 50, 50), 2)  # Darker gray border
+                        
+                        # Add obstacle index
+                        if len(obstacle_coords) > 0:
+                            center_x = int(np.mean(obstacle_coords[:, 0]))
+                            center_y = int(np.mean(obstacle_coords[:, 1]))
+                            cv2.putText(image, f"Obs{i}", (center_x - 10, center_y + 5), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+            
             # Add coordinate labels at vertices
             for i, coord in enumerate(field_coords[:8]):  # Limit to first 8 points to avoid clutter
                 img_x, img_y = world_to_image(coord[0], coord[1])
@@ -499,7 +515,8 @@ class CoverageNavigatorTester(Node):
                            font_scale, (0, 0, 0), thickness)
             
             # Add title and info
-            title = f"Field Polygon - {len(field_coords)} points"
+            obstacle_count = len(obstacles_polygons) if obstacles_polygons else 0
+            title = f"Field Polygon - {len(field_coords)} points, {obstacle_count} obstacles"
             area_m2 = self.calculate_polygon_area(field_coords)
             subtitle = f"Area: {area_m2:.1f} m² | Bounds: ({min_x:.1f},{min_y:.1f}) to ({max_x:.1f},{max_y:.1f})"
             
@@ -536,16 +553,18 @@ class CoverageNavigatorTester(Node):
             user_polygon: List of [x, y] coordinates defining the field boundary
             
         Returns:
-            List of [x, y] coordinates of the largest free space polygon within the field, or None if none found
+            Tuple of (free_space_polygon, obstacles_polygons) where:
+            - free_space_polygon: List of [x, y] coordinates of the largest free space polygon within the field, or None if none found
+            - obstacles_polygons: List of obstacle polygons, each as a list of [x, y] coordinates
         """
         try:
             if not hasattr(self, 'current_costmap') or not self.current_costmap:
                 self.get_logger().error('No costmap available. Call get costmap service first.')
-                return None
+                return None, []
             
             if not user_polygon or len(user_polygon) < 3:
                 self.get_logger().error('Invalid user polygon provided')
-                return None
+                return None, []
             
             costmap_msg = self.current_costmap
             self.get_logger().info(f'Cropping costmap to user polygon: {user_polygon}')
@@ -557,7 +576,7 @@ class CoverageNavigatorTester(Node):
                     actual_costmap_data = costmap_msg['data']
                 else:
                     self.get_logger().error(f"Costmap data has error code: {costmap_msg['code']}")
-                    return None
+                    return None, []
             
             # Extract costmap data
             costmap_data = actual_costmap_data['data']
@@ -574,12 +593,12 @@ class CoverageNavigatorTester(Node):
                                 continue
                     else:
                         self.get_logger().error("Could not extract numerical data from dict format")
-                        return None
+                        return None, []
                 else:
                     data = np.array(costmap_data, dtype=np.uint8)
             else:
                 self.get_logger().error(f"Unexpected costmap data format: {type(costmap_data)}")
-                return None
+                return None, []
             
             data = data.reshape((actual_costmap_data['metadata']['size_y'], actual_costmap_data['metadata']['size_x']))
             resolution = actual_costmap_data['metadata']['resolution']
@@ -622,7 +641,7 @@ class CoverageNavigatorTester(Node):
             
             if not contours:
                 self.get_logger().warn('No free space contours found within the user polygon')
-                return None
+                return None, []
             
             # Find the largest contour
             largest_contour = None
@@ -636,7 +655,7 @@ class CoverageNavigatorTester(Node):
             
             if largest_contour is None:
                 self.get_logger().warn('No sufficiently large free space found within the user polygon')
-                return None
+                return None, []
             
             # Simplify the polygon to reduce number of points
             epsilon = 0.01 * cv2.arcLength(largest_contour, True)
@@ -654,18 +673,54 @@ class CoverageNavigatorTester(Node):
             self.get_logger().info(f'Found largest free space: area={largest_area_meters:.2f} m², points={len(world_polygon)}')
             self.get_logger().info(f'Free space polygon: {world_polygon[:5]}...')  # First 5 points
             
-            # Save debug image
+            # Detect obstacles within the cropped area
+            obstacle_binary = np.zeros_like(data, dtype=np.uint8)
+            obstacle_binary[data >= 200] = 255  # High cost areas are obstacles
+            
+            # Apply user polygon mask to only consider obstacles within the polygon
+            cropped_obstacles = cv2.bitwise_and(obstacle_binary, mask)
+            
+            # Clean up the obstacle binary image
+            cropped_obstacles = cv2.morphologyEx(cropped_obstacles, cv2.MORPH_CLOSE, kernel)
+            cropped_obstacles = cv2.morphologyEx(cropped_obstacles, cv2.MORPH_OPEN, kernel)
+            
+            # Find obstacle contours
+            obstacle_contours, _ = cv2.findContours(cropped_obstacles, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Convert obstacle contours to world coordinates
+            obstacle_polygons = []
+            for obstacle_contour in obstacle_contours:
+                if cv2.contourArea(obstacle_contour) > 25:  # Minimum obstacle size threshold
+                    # Simplify the obstacle polygon
+                    epsilon = 0.02 * cv2.arcLength(obstacle_contour, True)
+                    simplified_obstacle = cv2.approxPolyDP(obstacle_contour, epsilon, True)
+                    
+                    # Convert to world coordinates
+                    obstacle_world = []
+                    for point in simplified_obstacle:
+                        pixel_x, pixel_y = point[0][0], point[0][1]
+                        world_x = origin_x + (pixel_x * resolution)
+                        world_y = origin_y + (pixel_y * resolution)
+                        obstacle_world.append([world_x, world_y])
+                    
+                    if len(obstacle_world) >= 3:  # Valid polygon needs at least 3 points
+                        obstacle_polygons.append(obstacle_world)
+            
+            self.get_logger().info(f'Found {len(obstacle_polygons)} obstacles within the cropped area')
+            
+            # Save debug image with obstacles
             debug_image = cv2.cvtColor(cropped_free_space, cv2.COLOR_GRAY2BGR)
             cv2.drawContours(debug_image, [largest_contour], -1, (0, 255, 0), 2)  # Green for free space
             cv2.drawContours(debug_image, [polygon_contour], -1, (255, 0, 0), 2)  # Blue for user polygon
+            cv2.drawContours(debug_image, obstacle_contours, -1, (0, 0, 255), 2)  # Red for obstacles
             cv2.imwrite('cropped_costmap_analysis.png', debug_image)
             self.get_logger().info('Saved debug image: cropped_costmap_analysis.png')
             
-            return world_polygon
+            return world_polygon, obstacle_polygons
             
         except Exception as e:
             self.get_logger().error(f'Error cropping costmap and finding free space: {str(e)}')
-            return None
+            return None, []
 
 
 
@@ -914,25 +969,22 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 use_user_field = True
                 if 'use_user_field' in data:
                     use_user_field = data['use_user_field']
+                field = None
                 if use_user_field:
                     field = user_field
                     self.visualize_field_polygon(field, "user_provided_field")
                     self.get_logger().info(f"Using user-provided field: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
                 else:
                     # Get the largest free space from costmap analysis
-                    field = self.call_get_costmap_service()
-                    field = None
-                    if field:
-                        self.visualize_field_polygon(field, "global_free_space")
-                        self.get_logger().info(f"Using global free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
-                    else:
-                        # If no free space found globally, try cropping to user polygon
-                        self.get_logger().info("No global free space found, trying to crop to user polygon")
-                        field = self.crop_and_find_free_space(user_field)
+                    if self.call_get_costmap_service():
+                        field, obstacles = self.crop_and_find_free_space(user_field)
                         if field:
-                            self.visualize_field_polygon(field, "cropped_free_space")
+                            self.visualize_field_polygon(field, "cropped_free_space", obstacles)
                             self.get_logger().info(f"Using cropped free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
-                
+                            self.get_logger().info(f"Found {len(obstacles)} obstacles within the field")
+                            for i, obs in enumerate(obstacles):
+                                self.get_logger().info(f"Obstacle {i}: {obs}")
+                    
                 if not field:
                     return jsonify({"code": 1,"error": "在用户指定区域内未找到可用的自由空间"}), 404
                 
