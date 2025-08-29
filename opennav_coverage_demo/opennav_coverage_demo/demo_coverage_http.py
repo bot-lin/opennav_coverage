@@ -728,7 +728,7 @@ class CoverageNavigatorTester(Node):
     def destroy_node(self):
         super().destroy_node()
 
-    def sendTaskRequest(self, waypoints, wait_at_first_waypoint=False, path_planner='straight'):
+    def sendTaskRequest(self, waypoints, wait_at_first_waypoint=False, path_planner='straight', precise_xy=0.05):
         flask_ros_url = 'http://127.0.0.1:1234'
         ros_data = {
             "wps": [],
@@ -739,7 +739,7 @@ class CoverageNavigatorTester(Node):
         index = 0
         for waypoint in waypoints:
             actions = []
-            precise_xy = 0.05
+            precise_xy = precise_xy
             if index == 0 and wait_at_first_waypoint:
                 actions.append({
                     'name': 'wait_for_command',
@@ -919,7 +919,7 @@ class CoverageNavigatorTester(Node):
                 end_point = swath.endPoint()
                 point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
                 self.current_waypoints.append(point)
-                self.get_logger().info(f'Swath {i}-{j}: Start({start_point.X():.2f}, {start_point.Y():.2f}) End({end_point.X():.2f}, {end_point.Y():.2f})')
+                # self.get_logger().info(f'Swath {i}-{j}: Start({start_point.X():.2f}, {start_point.Y():.2f}) End({end_point.X():.2f}, {end_point.Y():.2f})')
         # Step 5: Plan path
 
 
@@ -982,8 +982,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                             self.visualize_field_polygon(field, "cropped_free_space", obstacles)
                             self.get_logger().info(f"Using cropped free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
                             self.get_logger().info(f"Found {len(obstacles)} obstacles within the field")
-                            for i, obs in enumerate(obstacles):
-                                self.get_logger().info(f"Obstacle {i}: {obs}")
+                     
                     
                 if not field:
                     return jsonify({"code": 1,"error": "在用户指定区域内未找到可用的自由空间"}), 404
@@ -1090,12 +1089,14 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             data = request.get_json()
             wait_at_first_waypoint = data.get('wait_at_first_waypoint', False)
             path_planner = data.get('path_planner', 'straight')
+            precise_xy = data.get('precise_xy', 0.1)
+
             if self.current_waypoints is None or len(self.current_waypoints) == 0:
                 return jsonify({
                     "code": 1,
                     "error": "没有可用的导航路径，请先调用 /navigate_coverage 接口"
                 }), 400
-            result = self.sendTaskRequest(self.current_waypoints, wait_at_first_waypoint=wait_at_first_waypoint, path_planner=path_planner)
+            result = self.sendTaskRequest(self.current_waypoints, wait_at_first_waypoint=wait_at_first_waypoint, path_planner=path_planner, precise_xy=precise_xy)
             if result != 0:
                 return jsonify({
                     "code": 1,
