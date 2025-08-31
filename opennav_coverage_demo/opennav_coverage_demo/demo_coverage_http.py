@@ -565,7 +565,14 @@ class CoverageNavigatorTester(Node):
             filename = f"{filename_prefix}.png"
             cv2.imwrite(filename, image)
             self.get_logger().info(f"Saved field visualization: {filename}")
-            self.get_logger().info(f"Field area: {area_m2:.1f} m², {len(field_coords)} vertices")
+            
+            if divided_areas:
+                total_areas = len(divided_areas)
+                total_area = sum(self.calculate_polygon_area(area) for area in divided_areas)
+                self.get_logger().info(f"Total field area: {total_area:.1f} m², {total_areas} subdivisions")
+            else:
+                area_m2 = self.calculate_polygon_area(field_coords)
+                self.get_logger().info(f"Field area: {area_m2:.1f} m², {len(field_coords)} vertices")
             
         except Exception as e:
             self.get_logger().error(f"Error visualizing field polygon: {str(e)}")
@@ -1005,13 +1012,19 @@ class CoverageNavigatorTester(Node):
     def toPolygon(self, field, rings):
         points = []
         for coord in field:
-            p = f2c.Point(coord[0], coord[1])
+            # Ensure coordinates are float values
+            x = float(coord[0])
+            y = float(coord[1])
+            p = f2c.Point(x, y)
             points.append(p)
         cell = f2c.Cell(f2c.LinearRing(f2c.VectorPoint(points)))
         for ring in rings:
             r = f2c.LinearRing()
             for coord in ring:
-                p = f2c.Point(coord[0], coord[1])
+                # Ensure coordinates are float values
+                x = float(coord[0])
+                y = float(coord[1])
+                p = f2c.Point(x, y)
                 r.addPoint(p)
             cell.addRing(r)
         cells = f2c.Cells(cell)
