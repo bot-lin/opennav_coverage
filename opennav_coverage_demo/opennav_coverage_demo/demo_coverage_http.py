@@ -47,7 +47,8 @@ class CoverageNavigatorTester(Node):
     # 这里保留您现有的CoverageNavigatorTester类的代码
     def __init__(self):
         super().__init__(node_name='coverage_navigator_tester')
-        self.current_costmap = None  # Initialize costmap storage   
+        self.current_costmap = None  # Initialize costmap storage
+        self.current_routes = []  # Store coverage routes for visualization   
     
     def call_get_costmap_service(self):
         try:
@@ -421,14 +422,15 @@ class CoverageNavigatorTester(Node):
             self.get_logger().error(f'Error processing costmap: {str(e)}')
             return []
 
-    def visualize_field_polygon(self, field_coords, filename_prefix="selected_field", obstacles_polygons=None):
+    def visualize_field_polygon(self, field_coords, filename_prefix="selected_field", obstacles_polygons=None, coverage_routes=None):
         """
-        Visualize the field polygon and obstacles for debugging purposes.
+        Visualize the field polygon, obstacles, and coverage routes for debugging purposes.
         
         Args:
             field_coords: List of [x, y] coordinates defining the field boundary
             filename_prefix: Prefix for the saved image file
             obstacles_polygons: List of obstacle polygons, each as a list of [x, y] coordinates
+            coverage_routes: List of route segments with start/end coordinates
         """
         try:
             if not field_coords or len(field_coords) < 3:
@@ -514,9 +516,58 @@ class CoverageNavigatorTester(Node):
                 cv2.putText(image, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 
                            font_scale, (0, 0, 0), thickness)
             
+            # Draw coverage routes if provided
+            route_count = 0
+            if coverage_routes:
+                self.get_logger().info(f"Drawing {len(coverage_routes)} coverage route segments")
+                route_count = len(coverage_routes)
+                
+                # Colors for different route segments
+                route_colors = [
+                    (0, 165, 255),    # Orange
+                    (147, 20, 255),   # Deep pink
+                    (255, 191, 0),    # Dark orange
+                    (0, 255, 127),    # Spring green
+                    (255, 20, 147),   # Deep pink
+                    (0, 191, 255),    # Deep sky blue
+                    (255, 105, 180),  # Hot pink
+                    (50, 205, 50)     # Lime green
+                ]
+                
+                for i, route in enumerate(coverage_routes):
+                    # Convert route coordinates to image coordinates
+                    start_img_x, start_img_y = world_to_image(route['start'][0], route['start'][1])
+                    end_img_x, end_img_y = world_to_image(route['end'][0], route['end'][1])
+                    
+                    # Use different colors for different segments
+                    color_idx = route['segment_index'] % len(route_colors)
+                    color = route_colors[color_idx]
+                    
+                    # Draw route line with thick stroke
+                    cv2.line(image, (start_img_x, start_img_y), (end_img_x, end_img_y), color, 3)
+                    
+                    # Draw start point
+                    cv2.circle(image, (start_img_x, start_img_y), 4, (0, 255, 0), -1)  # Green start
+                    
+                    # Draw end point
+                    cv2.circle(image, (end_img_x, end_img_y), 4, (0, 0, 255), -1)  # Red end
+                    
+                    # Add route segment number at midpoint for first few routes
+                    if i < 10:  # Only label first 10 routes to avoid clutter
+                        mid_x = (start_img_x + end_img_x) // 2
+                        mid_y = (start_img_y + end_img_y) // 2
+                        route_text = f"R{i}"
+                        cv2.putText(image, route_text, (mid_x - 8, mid_y + 4), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 2)  # White with border
+                        cv2.putText(image, route_text, (mid_x - 8, mid_y + 4), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 0), 1)  # Black text
+            
             # Add title and info
             obstacle_count = len(obstacles_polygons) if obstacles_polygons else 0
-            title = f"Field Polygon - {len(field_coords)} points, {obstacle_count} obstacles"
+            if route_count > 0:
+                title = f"Field Polygon - {len(field_coords)} points, {obstacle_count} obstacles, {route_count} routes"
+            else:
+                title = f"Field Polygon - {len(field_coords)} points, {obstacle_count} obstacles"
             area_m2 = self.calculate_polygon_area(field_coords)
             subtitle = f"Area: {area_m2:.1f} m² | Bounds: ({min_x:.1f},{min_y:.1f}) to ({max_x:.1f},{max_y:.1f})"
             
@@ -906,6 +957,8 @@ class CoverageNavigatorTester(Node):
         size = vector_swaths.size()
         self.get_logger().info(f'路径包含 {size} 条覆盖路径段')
         self.current_waypoints = []
+        self.current_routes = []  # Reset routes for new coverage generation
+        
         for i in range(size):
             size_swaths = vector_swaths[i].size()
             swaths = vector_swaths[i]
@@ -919,6 +972,16 @@ class CoverageNavigatorTester(Node):
                 end_point = swath.endPoint()
                 point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
                 self.current_waypoints.append(point)
+                
+                # Store route segment for visualization
+                route_segment = {
+                    'start': [start_point.X(), start_point.Y()],
+                    'end': [end_point.X(), end_point.Y()],
+                    'segment_index': i,
+                    'swath_index': j
+                }
+                self.current_routes.append(route_segment)
+                
                 # self.get_logger().info(f'Swath {i}-{j}: Start({start_point.X():.2f}, {start_point.Y():.2f}) End({end_point.X():.2f}, {end_point.Y():.2f})')
         # Step 5: Plan path
 
@@ -1069,6 +1132,19 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 # self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field, swath_angle, repeat_times, mode, objective, step_angle))
                 # self.task_thread.start()
                 # path = self._run_navigation_task(field, swath_angle, repeat_times, mode, objective, step_angle)
+
+                # Generate visualization with coverage routes after path planning
+                self.get_logger().info(f"Generated {len(self.current_routes)} coverage route segments")
+                if hasattr(self, 'current_routes') and self.current_routes:
+                    if use_user_field:
+                        # Re-visualize user field with routes
+                        self.visualize_field_polygon(field, "user_provided_field_with_routes", coverage_routes=self.current_routes)
+                    else:
+                        # Re-visualize cropped free space with routes and obstacles  
+                        if 'obstacles' in locals():
+                            self.visualize_field_polygon(field, "cropped_free_space_with_routes", obstacles, self.current_routes)
+                        else:
+                            self.visualize_field_polygon(field, "cropped_free_space_with_routes", coverage_routes=self.current_routes)
 
                 return jsonify({"code": 0, "path": None, "status": "导航任务已启动"}), 202
             except Exception as e:
