@@ -421,15 +421,14 @@ class CoverageNavigatorTester(Node):
             self.get_logger().error(f'Error processing costmap: {str(e)}')
             return []
 
-    def visualize_field_polygon(self, field_coords, filename_prefix="selected_field", obstacles_polygons=None, divided_areas=None):
+    def visualize_field_polygon(self, field_coords, filename_prefix="selected_field", obstacles_polygons=None):
         """
-        Visualize the field polygon, obstacles, and divided areas for debugging purposes.
+        Visualize the field polygon and obstacles for debugging purposes.
         
         Args:
-            field_coords: List of [x, y] coordinates defining the field boundary (or single area if divided_areas provided)
+            field_coords: List of [x, y] coordinates defining the field boundary
             filename_prefix: Prefix for the saved image file
             obstacles_polygons: List of obstacle polygons, each as a list of [x, y] coordinates
-            divided_areas: List of divided field areas, each as a list of [x, y] coordinates
         """
         try:
             if not field_coords or len(field_coords) < 3:
@@ -469,41 +468,10 @@ class CoverageNavigatorTester(Node):
                 img_x, img_y = world_to_image(coord[0], coord[1])
                 image_coords.append([img_x, img_y])
             
-            # Draw field polygon(s)
-            if divided_areas:
-                # Draw all divided areas with different colors
-                colors = [
-                    (200, 255, 200), (255, 200, 200), (200, 200, 255), (255, 255, 200),
-                    (255, 200, 255), (200, 255, 255), (180, 255, 180), (255, 180, 180)
-                ]
-                border_colors = [
-                    (0, 150, 0), (150, 0, 0), (0, 0, 150), (150, 150, 0),
-                    (150, 0, 150), (0, 150, 150), (60, 150, 60), (150, 60, 60)
-                ]
-                
-                self.get_logger().info(f"Drawing {len(divided_areas)} divided areas")
-                for area_idx, area_coords in enumerate(divided_areas):
-                    area_image_coords = []
-                    for coord in area_coords:
-                        img_x, img_y = world_to_image(coord[0], coord[1])
-                        area_image_coords.append([img_x, img_y])
-                    
-                    area_coords_array = np.array(area_image_coords, dtype=np.int32)
-                    color_idx = area_idx % len(colors)
-                    cv2.fillPoly(image, [area_coords_array], colors[color_idx])
-                    cv2.polylines(image, [area_coords_array], True, border_colors[color_idx], 2)
-                    
-                    # Add area index label
-                    if len(area_coords_array) > 0:
-                        center_x = int(np.mean(area_coords_array[:, 0]))
-                        center_y = int(np.mean(area_coords_array[:, 1]))
-                        cv2.putText(image, f"Area{area_idx}", (center_x - 20, center_y), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2)
-            else:
-                # Draw single field polygon
-                image_coords = np.array(image_coords, dtype=np.int32)
-                cv2.fillPoly(image, [image_coords], (200, 255, 200))  # Light green fill
-                cv2.polylines(image, [image_coords], True, (0, 150, 0), 3)  # Dark green border
+            # Draw field polygon
+            image_coords = np.array(image_coords, dtype=np.int32)
+            cv2.fillPoly(image, [image_coords], (200, 255, 200))  # Light green fill
+            cv2.polylines(image, [image_coords], True, (0, 150, 0), 3)  # Dark green border
             
             # Draw obstacles if provided
             if obstacles_polygons:
@@ -548,15 +516,9 @@ class CoverageNavigatorTester(Node):
             
             # Add title and info
             obstacle_count = len(obstacles_polygons) if obstacles_polygons else 0
-            if divided_areas:
-                total_areas = len(divided_areas)
-                total_area = sum(self.calculate_polygon_area(area) for area in divided_areas)
-                title = f"Field Subdivisions - {total_areas} areas, {obstacle_count} obstacles"
-                subtitle = f"Total Area: {total_area:.1f} m² | Bounds: ({min_x:.1f},{min_y:.1f}) to ({max_x:.1f},{max_y:.1f})"
-            else:
-                area_m2 = self.calculate_polygon_area(field_coords)
-                title = f"Field Polygon - {len(field_coords)} points, {obstacle_count} obstacles"
-                subtitle = f"Area: {area_m2:.1f} m² | Bounds: ({min_x:.1f},{min_y:.1f}) to ({max_x:.1f},{max_y:.1f})"
+            title = f"Field Polygon - {len(field_coords)} points, {obstacle_count} obstacles"
+            area_m2 = self.calculate_polygon_area(field_coords)
+            subtitle = f"Area: {area_m2:.1f} m² | Bounds: ({min_x:.1f},{min_y:.1f}) to ({max_x:.1f},{max_y:.1f})"
             
             cv2.putText(image, title, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
             cv2.putText(image, subtitle, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
@@ -583,165 +545,16 @@ class CoverageNavigatorTester(Node):
             area -= coords[j][0] * coords[i][1]
         return abs(area) / 2.0
 
-    def divide_field_by_area(self, field_coords, max_area_m2):
-        """
-        Divide a field polygon into smaller areas based on maximum area constraint.
-        
-        Args:
-            field_coords: List of [x, y] coordinates defining the field boundary
-            max_area_m2: Maximum area in square meters for each subdivision
-            
-        Returns:
-            List of field subdivisions, each as a list of [x, y] coordinates
-        """
-        try:
-            if not field_coords or len(field_coords) < 3:
-                self.get_logger().warn("Invalid field coordinates for area division")
-                return [field_coords]
-            
-            total_area = self.calculate_polygon_area(field_coords)
-            self.get_logger().info(f"Total field area: {total_area:.2f} m²")
-            
-            if total_area <= max_area_m2:
-                self.get_logger().info("Field area is within the maximum limit, no division needed")
-                return [field_coords]
-            
-            # Calculate how many divisions are needed
-            num_divisions = math.ceil(total_area / max_area_m2)
-            self.get_logger().info(f"Need to divide field into approximately {num_divisions} areas")
-            
-            # Simple rectangular grid division approach
-            coords = np.array(field_coords)
-            min_x, min_y = coords.min(axis=0)
-            max_x, max_y = coords.max(axis=0)
-            
-            # Calculate grid dimensions
-            width = max_x - min_x
-            height = max_y - min_y
-            aspect_ratio = width / height
-            
-            # Determine grid layout that best approximates the needed divisions
-            if aspect_ratio >= 1:
-                # Wider than tall - prefer more columns
-                cols = math.ceil(math.sqrt(num_divisions * aspect_ratio))
-                rows = math.ceil(num_divisions / cols)
-            else:
-                # Taller than wide - prefer more rows
-                rows = math.ceil(math.sqrt(num_divisions / aspect_ratio))
-                cols = math.ceil(num_divisions / rows)
-            
-            self.get_logger().info(f"Using {rows}x{cols} grid for field division")
-            
-            # Create grid cells
-            x_step = width / cols
-            y_step = height / rows
-            
-            divided_areas = []
-            area_index = 0
-            
-            for row in range(rows):
-                for col in range(cols):
-                    if area_index >= num_divisions:
-                        break
-                    
-                    # Calculate cell bounds
-                    cell_min_x = min_x + col * x_step
-                    cell_max_x = min_x + (col + 1) * x_step
-                    cell_min_y = min_y + row * y_step
-                    cell_max_y = min_y + (row + 1) * y_step
-                    
-                    # Create rectangular cell
-                    cell_coords = [
-                        [cell_min_x, cell_min_y],
-                        [cell_max_x, cell_min_y],
-                        [cell_max_x, cell_max_y],
-                        [cell_min_x, cell_max_y],
-                        [cell_min_x, cell_min_y]  # Close the polygon
-                    ]
-                    
-                    # Intersect with original field polygon
-                    intersected_area = self.intersect_polygons(field_coords, cell_coords)
-                    
-                    if intersected_area and len(intersected_area) >= 3:
-                        area_m2 = self.calculate_polygon_area(intersected_area)
-                        if area_m2 > 1.0:  # Minimum area threshold
-                            divided_areas.append(intersected_area)
-                            self.get_logger().info(f"Division {area_index}: {area_m2:.2f} m²")
-                            area_index += 1
-                
-                if area_index >= num_divisions:
-                    break
-            
-            if not divided_areas:
-                self.get_logger().warn("No valid divisions created, returning original field")
-                return [field_coords]
-            
-            self.get_logger().info(f"Successfully divided field into {len(divided_areas)} areas")
-            return divided_areas
-            
-        except Exception as e:
-            self.get_logger().error(f"Error dividing field by area: {str(e)}")
-            return [field_coords]
-
-    def intersect_polygons(self, poly1, poly2):
-        """
-        Simple polygon intersection using OpenCV.
-        
-        Args:
-            poly1: First polygon as list of [x, y] coordinates
-            poly2: Second polygon as list of [x, y] coordinates
-            
-        Returns:
-            Intersected polygon as list of [x, y] coordinates, or None if no intersection
-        """
-        try:
-            # Convert to numpy arrays
-            p1 = np.array(poly1, dtype=np.float32)
-            p2 = np.array(poly2, dtype=np.float32)
-            
-            # Find bounding boxes
-            min_x = max(p1[:, 0].min(), p2[:, 0].min())
-            max_x = min(p1[:, 0].max(), p2[:, 0].max())
-            min_y = max(p1[:, 1].min(), p2[:, 1].min())
-            max_y = min(p1[:, 1].max(), p2[:, 1].max())
-            
-            if min_x >= max_x or min_y >= max_y:
-                return None  # No intersection
-            
-            # Simple approach: check if cell rectangle overlaps with field
-            # For more complex intersections, we'd use a computational geometry library
-            
-            # Create intersection rectangle
-            intersection = [
-                [min_x, min_y],
-                [max_x, min_y], 
-                [max_x, max_y],
-                [min_x, max_y],
-                [min_x, min_y]
-            ]
-            
-            # Check if intersection has meaningful area
-            if (max_x - min_x) * (max_y - min_y) > 1.0:
-                return intersection
-            else:
-                return None
-                
-        except Exception as e:
-            self.get_logger().error(f"Error intersecting polygons: {str(e)}")
-            return None
-
-    def crop_and_find_free_space(self, user_polygon, max_area_m2=None):
+    def crop_and_find_free_space(self, user_polygon):
         """
         Crop the global costmap to the user's polygon and find the largest free space within it.
         
         Args:
             user_polygon: List of [x, y] coordinates defining the field boundary
-            max_area_m2: Optional maximum area in square meters for field subdivision
             
         Returns:
-            Tuple of (free_space_polygons, obstacles_polygons) where:
-            - free_space_polygons: List of free space polygons (subdivided if max_area_m2 specified), 
-              each as a list of [x, y] coordinates, or None if none found
+            Tuple of (free_space_polygon, obstacles_polygons) where:
+            - free_space_polygon: List of [x, y] coordinates of the largest free space polygon within the field, or None if none found
             - obstacles_polygons: List of obstacle polygons, each as a list of [x, y] coordinates
         """
         try:
@@ -895,30 +708,15 @@ class CoverageNavigatorTester(Node):
             
             self.get_logger().info(f'Found {len(obstacle_polygons)} obstacles within the cropped area')
             
-            # Apply area subdivision if max_area_m2 is specified
-            if max_area_m2 and max_area_m2 > 0:
-                divided_areas = self.divide_field_by_area(world_polygon, max_area_m2)
-                self.get_logger().info(f'Divided field into {len(divided_areas)} areas based on max area {max_area_m2} m²')
-                
-                # Save debug image with divided areas
-                debug_image = cv2.cvtColor(cropped_free_space, cv2.COLOR_GRAY2BGR)
-                cv2.drawContours(debug_image, [largest_contour], -1, (0, 255, 0), 2)  # Green for free space
-                cv2.drawContours(debug_image, [polygon_contour], -1, (255, 0, 0), 2)  # Blue for user polygon
-                cv2.drawContours(debug_image, obstacle_contours, -1, (0, 0, 255), 2)  # Red for obstacles
-                cv2.imwrite('cropped_costmap_analysis.png', debug_image)
-                self.get_logger().info('Saved debug image: cropped_costmap_analysis.png')
-                
-                return divided_areas, obstacle_polygons
-            else:
-                # Save debug image with obstacles
-                debug_image = cv2.cvtColor(cropped_free_space, cv2.COLOR_GRAY2BGR)
-                cv2.drawContours(debug_image, [largest_contour], -1, (0, 255, 0), 2)  # Green for free space
-                cv2.drawContours(debug_image, [polygon_contour], -1, (255, 0, 0), 2)  # Blue for user polygon
-                cv2.drawContours(debug_image, obstacle_contours, -1, (0, 0, 255), 2)  # Red for obstacles
-                cv2.imwrite('cropped_costmap_analysis.png', debug_image)
-                self.get_logger().info('Saved debug image: cropped_costmap_analysis.png')
-                
-                return [world_polygon], obstacle_polygons
+            # Save debug image with obstacles
+            debug_image = cv2.cvtColor(cropped_free_space, cv2.COLOR_GRAY2BGR)
+            cv2.drawContours(debug_image, [largest_contour], -1, (0, 255, 0), 2)  # Green for free space
+            cv2.drawContours(debug_image, [polygon_contour], -1, (255, 0, 0), 2)  # Blue for user polygon
+            cv2.drawContours(debug_image, obstacle_contours, -1, (0, 0, 255), 2)  # Red for obstacles
+            cv2.imwrite('cropped_costmap_analysis.png', debug_image)
+            self.get_logger().info('Saved debug image: cropped_costmap_analysis.png')
+            
+            return world_polygon, obstacle_polygons
             
         except Exception as e:
             self.get_logger().error(f'Error cropping costmap and finding free space: {str(e)}')
@@ -1035,8 +833,7 @@ class CoverageNavigatorTester(Node):
                                swath_set_angle=0.0,
                                route_mode="AUTO",
                                route_spiral=2,
-                               route_custom_order=[],
-                               area_index=0
+                               route_custom_order=[]
                                ):
         robot = f2c.Robot(robot_width, robot_op_width)
         robot.setMinTurningRadius(robot_min_turning_radius)
@@ -1108,9 +905,7 @@ class CoverageNavigatorTester(Node):
         vector_swaths = route.getVectorSwaths()
         size = vector_swaths.size()
         self.get_logger().info(f'路径包含 {size} 条覆盖路径段')
-        # Initialize waypoints list if this is the first area, otherwise append
-        if area_index == 0:
-            self.current_waypoints = []
+        self.current_waypoints = []
         for i in range(size):
             size_swaths = vector_swaths[i].size()
             swaths = vector_swaths[i]
@@ -1171,59 +966,30 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 if not isinstance(user_field, list) or len(user_field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
                 
-                # Get max_area parameter for field subdivision
-                max_area_m2 = None
-                if 'max_area' in data:
-                    max_area_m2 = data['max_area']
-                    if not isinstance(max_area_m2, (int, float)) or max_area_m2 <= 0:
-                        return jsonify({"code": 1,"error": "'max_area'必须是正数"}), 400
-                    self.get_logger().info(f"Field subdivision enabled with max area: {max_area_m2} m²")
-
                 use_user_field = True
                 if 'use_user_field' in data:
                     use_user_field = data['use_user_field']
-                fields = None
-                obstacles = []
-                
+                field = None
                 if use_user_field:
                     field = user_field
-                    # Apply subdivision if max_area is specified
-                    if max_area_m2:
-                        fields = self.divide_field_by_area(field, max_area_m2)
-                        self.get_logger().info(f"Divided user field into {len(fields)} areas")
-                    else:
-                        fields = [field]
-                    
-                    # Visualize all field areas
-                    if len(fields) > 1:
-                        self.visualize_field_polygon(fields[0], "user_provided_field", divided_areas=fields)
-                    else:
-                        self.visualize_field_polygon(fields[0], "user_provided_field")
-                    total_area = sum(self.calculate_polygon_area(f) for f in fields)
-                    self.get_logger().info(f"Using user-provided field: {len(fields)} areas, total area ≈ {total_area:.1f} m²")
+                    self.visualize_field_polygon(field, "user_provided_field")
+                    self.get_logger().info(f"Using user-provided field: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
                 else:
                     # Get the largest free space from costmap analysis
                     if self.call_get_costmap_service():
-                        field_areas, obstacles = self.crop_and_find_free_space(user_field, max_area_m2)
-                        if field_areas:
-                            fields = field_areas
-                            # Visualize all field areas
-                            if len(fields) > 1:
-                                self.visualize_field_polygon(fields[0], "cropped_free_space", obstacles, divided_areas=fields)
-                            else:
-                                self.visualize_field_polygon(fields[0], "cropped_free_space", obstacles)
-                            total_area = sum(self.calculate_polygon_area(f) for f in fields)
-                            self.get_logger().info(f"Using cropped free space: {len(fields)} areas, total area ≈ {total_area:.1f} m²")
+                        field, obstacles = self.crop_and_find_free_space(user_field)
+                        if field:
+                            self.visualize_field_polygon(field, "cropped_free_space", obstacles)
+                            self.get_logger().info(f"Using cropped free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
                             self.get_logger().info(f"Found {len(obstacles)} obstacles within the field")
                      
                     
-                if not fields:
+                if not field:
                     return jsonify({"code": 1,"error": "在用户指定区域内未找到可用的自由空间"}), 404
                 
-                # Ensure all polygons are closed (first point equals last point)
-                for i, field in enumerate(fields):
-                    if field[0] != field[-1]:
-                        fields[i].append(field[0])
+                # Ensure the polygon is closed (first point equals last point)
+                if field[0] != field[-1]:
+                    field.append(field[0])
                 
                 if "mode" in data:
                     mode = data['mode']
@@ -1263,40 +1029,28 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     repeat_times = 1
 
 
-                # Generate coverage paths for all field areas
-                self.current_waypoints = []
-                total_areas = len(fields)
-                
-                self.get_logger().info(f"Generating coverage paths for {total_areas} field areas")
-                
-                for area_idx, field in enumerate(fields):
-                    self.get_logger().info(f"Processing area {area_idx + 1}/{total_areas}, area: {self.calculate_polygon_area(field):.2f} m²")
-                    
-                    cells = self.toPolygon(field, data.get('rings', []))
-                    self.generate_coverage_path(
-                        cells=cells,
-                        robot_width= data.get('robot_width', 1.0),
-                        robot_op_width= data.get('robot_op_width', 1.0),
-                        robot_min_turning_radius= data.get('robot_min_turning_radius', 1e-8),
-                        robot_max_diff_curvature= data.get('robot_max_diff_curvature', 1e8),
-                        robot_cruise_vel= data.get('robot_cruise_vel', 0.5),
-                        robot_turn_vel= data.get('robot_turn_vel', 0.5),
-                        use_decomposition= data.get('use_decomposition', True),
-                        decomposition_type= data.get('decomposition_type', 'Trapezoidal'),
-                        headland_width= data.get('headland_width', 1.0),
-                        swath_allow_overlap= data.get('swath_allow_overlap', False),
-                        swath_mode= mode,
-                        swath_set_angle= swath_angle,
-                        swath_step_angle= step_angle,
-                        swath_obj= objective,
-                        route_mode= data.get('route_mode', 'AUTO'),
-                        route_spiral= data.get('route_spiral', 2),
-                        route_custom_order= data.get('route_custom_order', []),
-                        area_index=area_idx
-                    )
-                
-                total_waypoints = len(self.current_waypoints)
-                self.get_logger().info(f"Generated total {total_waypoints} waypoints for {total_areas} areas")
+                cells = self.toPolygon(field, data['rings'])
+                self.generate_coverage_path(
+                    cells=cells,
+                    robot_width= data.get('robot_width', 1.0),
+                    robot_op_width= data.get('robot_op_width', 1.0),
+                    robot_min_turning_radius= data.get('robot_min_turning_radius', 1e-8),
+                    robot_max_diff_curvature= data.get('robot_max_diff_curvature', 1e8),
+                    robot_cruise_vel= data.get('robot_cruise_vel', 0.5),
+                    robot_turn_vel= data.get('robot_turn_vel', 0.5),
+                    use_decomposition= data.get('use_decomposition', True),
+                    decomposition_type= data.get('decomposition_type', 'Trapezoidal'),
+                    headland_width= data.get('headland_width', 1.0),
+                    swath_allow_overlap= data.get('swath_allow_overlap', False),
+                    swath_mode= mode,
+                    swath_set_angle= swath_angle,
+                    swath_step_angle= step_angle,
+                    swath_obj= objective,
+                    route_mode= data.get('route_mode', 'AUTO'),
+                    route_spiral= data.get('route_spiral', 2),
+                    route_custom_order= data.get('route_custom_order', [])
+
+                )
 
                     
                 
