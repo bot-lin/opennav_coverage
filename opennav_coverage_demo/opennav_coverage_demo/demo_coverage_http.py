@@ -106,130 +106,6 @@ class CoverageNavigatorTester(Node):
             world_contour.append([world_x, world_y])
         return world_contour
 
-    def world_to_pixel(self, world_x, world_y, resolution, origin_x, origin_y):
-        """
-        Convert world coordinates to pixel coordinates
-        
-        Args:
-            world_x: World X coordinate in meters
-            world_y: World Y coordinate in meters
-            resolution: Meters per pixel
-            origin_x: World X coordinate of pixel (0,0)
-            origin_y: World Y coordinate of pixel (0,0)
-            
-        Returns:
-            (pixel_x, pixel_y): Pixel coordinates
-        """
-        pixel_x = int((world_x - origin_x) / resolution)
-        pixel_y = int((world_y - origin_y) / resolution)
-        return pixel_x, pixel_y
-
-    def validate_waypoint_in_costmap(self, world_x, world_y):
-        """
-        Validate if a waypoint is within the current costmap bounds.
-        
-        Args:
-            world_x: World X coordinate in meters
-            world_y: World Y coordinate in meters
-            
-        Returns:
-            bool: True if waypoint is within costmap bounds, False otherwise
-        """
-        try:
-            if not hasattr(self, 'current_costmap') or not self.current_costmap:
-                self.get_logger().warn('No costmap available for waypoint validation')
-                return False
-            
-            # Get costmap metadata
-            costmap_msg = self.current_costmap
-            actual_costmap_data = costmap_msg
-            if 'code' in costmap_msg and 'data' in costmap_msg:
-                if costmap_msg['code'] == 0:
-                    actual_costmap_data = costmap_msg['data']
-                else:
-                    return False
-            
-            if 'metadata' not in actual_costmap_data:
-                return False
-                
-            metadata = actual_costmap_data['metadata']
-            resolution = metadata['resolution']
-            origin_x = metadata['origin']['position']['x']
-            origin_y = metadata['origin']['position']['y']
-            size_x = metadata['size_x']
-            size_y = metadata['size_y']
-            
-            # Convert to pixel coordinates
-            pixel_x, pixel_y = self.world_to_pixel(world_x, world_y, resolution, origin_x, origin_y)
-            
-            # Check bounds with some margin
-            margin = 2  # 2-pixel margin from edges
-            is_valid = (margin <= pixel_x < size_x - margin and 
-                       margin <= pixel_y < size_y - margin)
-            
-            if not is_valid:
-                self.get_logger().warn(f'Waypoint ({world_x:.2f}, {world_y:.2f}) -> pixel ({pixel_x}, {pixel_y}) outside costmap bounds [{margin}, {size_x-margin}] x [{margin}, {size_y-margin}]')
-            
-            return is_valid
-            
-        except Exception as e:
-            self.get_logger().error(f'Error validating waypoint: {str(e)}')
-            return False
-
-    def clamp_waypoint_to_costmap(self, world_x, world_y):
-        """
-        Clamp a waypoint to valid costmap bounds.
-        
-        Args:
-            world_x: World X coordinate in meters
-            world_y: World Y coordinate in meters
-            
-        Returns:
-            (clamped_x, clamped_y): Clamped world coordinates within costmap bounds
-        """
-        try:
-            if not hasattr(self, 'current_costmap') or not self.current_costmap:
-                return world_x, world_y
-            
-            # Get costmap metadata
-            costmap_msg = self.current_costmap
-            actual_costmap_data = costmap_msg
-            if 'code' in costmap_msg and 'data' in costmap_msg:
-                if costmap_msg['code'] == 0:
-                    actual_costmap_data = costmap_msg['data']
-                else:
-                    return world_x, world_y
-            
-            if 'metadata' not in actual_costmap_data:
-                return world_x, world_y
-                
-            metadata = actual_costmap_data['metadata']
-            resolution = metadata['resolution']
-            origin_x = metadata['origin']['position']['x']
-            origin_y = metadata['origin']['position']['y']
-            size_x = metadata['size_x']
-            size_y = metadata['size_y']
-            
-            # Convert to pixel coordinates
-            pixel_x, pixel_y = self.world_to_pixel(world_x, world_y, resolution, origin_x, origin_y)
-            
-            # Clamp pixel coordinates with margin
-            margin = 3  # 3-pixel margin from edges
-            clamped_pixel_x = max(margin, min(pixel_x, size_x - margin - 1))
-            clamped_pixel_y = max(margin, min(pixel_y, size_y - margin - 1))
-            
-            # Convert back to world coordinates
-            clamped_world_x, clamped_world_y = self.pixel_to_world(clamped_pixel_x, clamped_pixel_y, resolution, origin_x, origin_y)
-            
-            if pixel_x != clamped_pixel_x or pixel_y != clamped_pixel_y:
-                self.get_logger().info(f'Clamped waypoint ({world_x:.2f}, {world_y:.2f}) to ({clamped_world_x:.2f}, {clamped_world_y:.2f})')
-            
-            return clamped_world_x, clamped_world_y
-            
-        except Exception as e:
-            self.get_logger().error(f'Error clamping waypoint: {str(e)}')
-            return world_x, world_y
-
     def process_costmap(self, msg):
         free_contours_world = []  # Initialize at the start
         try:
@@ -1083,33 +959,6 @@ class CoverageNavigatorTester(Node):
         self.current_waypoints = []
         self.current_routes = []  # Reset routes for new coverage generation
         
-        # Log costmap bounds for waypoint validation
-        if hasattr(self, 'current_costmap') and self.current_costmap:
-            try:
-                costmap_msg = self.current_costmap
-                actual_costmap_data = costmap_msg
-                if 'code' in costmap_msg and 'data' in costmap_msg and costmap_msg['code'] == 0:
-                    actual_costmap_data = costmap_msg['data']
-                
-                if 'metadata' in actual_costmap_data:
-                    metadata = actual_costmap_data['metadata']
-                    resolution = metadata['resolution']
-                    origin_x = metadata['origin']['position']['x']
-                    origin_y = metadata['origin']['position']['y']
-                    size_x = metadata['size_x']
-                    size_y = metadata['size_y']
-                    
-                    # Calculate world bounds
-                    min_world_x = origin_x
-                    max_world_x = origin_x + (size_x * resolution)
-                    min_world_y = origin_y
-                    max_world_y = origin_y + (size_y * resolution)
-                    
-                    self.get_logger().info(f'Costmap bounds: [{min_world_x:.2f}, {max_world_x:.2f}] x [{min_world_y:.2f}, {max_world_y:.2f}] (world coordinates)')
-                    self.get_logger().info(f'Costmap size: {size_x} x {size_y} pixels, resolution: {resolution:.3f} m/pixel')
-            except Exception as e:
-                self.get_logger().warn(f'Could not get costmap bounds: {str(e)}')
-        
         for i in range(size):
             size_swaths = vector_swaths[i].size()
             swaths = vector_swaths[i]
@@ -1118,43 +967,22 @@ class CoverageNavigatorTester(Node):
                  # Log start and end points of each swath
                 
                 start_point = swath.startPoint()
+                point = Point32(x=start_point.X(), y=start_point.Y(), z=0.0)
+                self.current_waypoints.append(point)
                 end_point = swath.endPoint()
+                point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
+                self.current_waypoints.append(point)
                 
-                # Validate and clamp waypoints to costmap bounds
-                start_x, start_y = self.clamp_waypoint_to_costmap(start_point.X(), start_point.Y())
-                end_x, end_y = self.clamp_waypoint_to_costmap(end_point.X(), end_point.Y())
-                
-                # Create waypoints with clamped coordinates
-                start_waypoint = Point32(x=start_x, y=start_y, z=0.0)
-                end_waypoint = Point32(x=end_x, y=end_y, z=0.0)
-                
-                self.current_waypoints.append(start_waypoint)
-                self.current_waypoints.append(end_waypoint)
-                
-                # Store route segment for visualization (use clamped coordinates)
+                # Store route segment for visualization
                 route_segment = {
-                    'start': [start_x, start_y],
-                    'end': [end_x, end_y],
+                    'start': [start_point.X(), start_point.Y()],
+                    'end': [end_point.X(), end_point.Y()],
                     'segment_index': i,
                     'swath_index': j
                 }
                 self.current_routes.append(route_segment)
                 
                 # self.get_logger().info(f'Swath {i}-{j}: Start({start_point.X():.2f}, {start_point.Y():.2f}) End({end_point.X():.2f}, {end_point.Y():.2f})')
-        
-        # Final validation: Check if any waypoints are still outside bounds
-        invalid_count = 0
-        for i, waypoint in enumerate(self.current_waypoints):
-            if not self.validate_waypoint_in_costmap(waypoint.x, waypoint.y):
-                invalid_count += 1
-                if invalid_count <= 5:  # Only log first 5 invalid waypoints to avoid spam
-                    self.get_logger().warn(f'Waypoint {i} still outside bounds: ({waypoint.x:.2f}, {waypoint.y:.2f})')
-        
-        if invalid_count > 0:
-            self.get_logger().warn(f'Generated {len(self.current_waypoints)} waypoints, {invalid_count} are outside costmap bounds')
-        else:
-            self.get_logger().info(f'Successfully generated {len(self.current_waypoints)} valid waypoints within costmap bounds')
-        
         # Step 5: Plan path
 
 
