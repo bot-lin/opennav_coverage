@@ -51,14 +51,14 @@ class CoverageNavigatorTester(Node):
     
     def call_clear_costmap_service(self):
         try:
-            url = "http://127.0.0.1:1234/clear_all_costmaps"
-            self.get_logger().info('Calling ClearAllCostmaps service...')
+            url = "http://127.0.0.1:1234/clear_global_costmap"
+            self.get_logger().info('Calling ClearGlobalCostmap service...')
             res = requests.get(url)
             if res.status_code == 200:
-                self.get_logger().info('ClearAllCostmaps service call succeeded.')
+                self.get_logger().info('ClearGlobalCostmap service call succeeded.')
                 return True
             else:
-                self.get_logger().error(f'ClearAllCostmaps service call failed with status code: {res.status_code}')
+                self.get_logger().error(f'ClearGlobalCostmap service call failed with status code: {res.status_code}')
                 return False
         except Exception as e:
             self.get_logger().error(f'Error calling service: {str(e)}')
@@ -77,11 +77,7 @@ class CoverageNavigatorTester(Node):
                 self.current_costmap = data
                 
                 # Save the costmap as an image immediately after obtaining it
-                
-                timestamp = time.strftime("%Y%m%d_%H%M%S")
-                filename = f"received_costmap_{timestamp}.png"
-                self.save_costmap_as_image(data, filename)
-                
+                                
                 return True
             else:
                 self.get_logger().error(f'GetCostmap service call failed with status code: {res.status_code}')
@@ -128,136 +124,7 @@ class CoverageNavigatorTester(Node):
             world_contour.append([world_x, world_y])
         return world_contour
 
-    def save_costmap_as_image(self, costmap_data, filename="received_costmap.png"):
-        """
-        Save the received costmap as an image file with metadata overlay.
-        
-        Args:
-            costmap_data: The costmap data received from the HTTP service
-            filename: Name of the output image file
-        """
-        try:
-            self.get_logger().info(f"Saving costmap as image: {filename}")
-            
-            # Handle HTTP service wrapper format
-            actual_costmap_data = costmap_data
-            if 'code' in costmap_data and 'data' in costmap_data:
-                if costmap_data['code'] == 0:
-                    actual_costmap_data = costmap_data['data']
-                    self.get_logger().info("Using costmap data from HTTP service wrapper")
-                else:
-                    self.get_logger().error(f"HTTP service returned error code: {costmap_data['code']}")
-                    return False
-            
-            # Check if data is in the expected format
-            if 'data' not in actual_costmap_data or 'metadata' not in actual_costmap_data:
-                self.get_logger().error("Invalid costmap message format - missing 'data' or 'metadata' keys")
-                return False
-            
-            # Extract costmap data
-            raw_data = actual_costmap_data['data']
-            metadata = actual_costmap_data['metadata']
-            
-            # Handle different data formats
-            if isinstance(raw_data, list):
-                try:
-                    if len(raw_data) > 0 and isinstance(raw_data[0], dict):
-                        # Try to extract from dict format
-                        for key in ['value', 'cost', 'data', 'cell_value']:
-                            if key in raw_data[0]:
-                                try:
-                                    data = np.array([cell[key] for cell in raw_data], dtype=np.uint8)
-                                    self.get_logger().info(f"Successfully extracted data using key '{key}'")
-                                    break
-                                except Exception:
-                                    continue
-                        else:
-                            self.get_logger().error("Could not extract numerical data from dict format")
-                            return False
-                    else:
-                        data = np.array(raw_data, dtype=np.uint8)
-                except (ValueError, TypeError) as e:
-                    self.get_logger().error(f"Cannot convert costmap data to numpy array: {e}")
-                    return False
-            else:
-                self.get_logger().error(f"Unexpected data type: {type(raw_data)}")
-                return False
-            
-            # Reshape the data
-            try:
-                height = metadata['size_y']
-                width = metadata['size_x']
-                data = data.reshape((height, width))
-                self.get_logger().info(f"Reshaped costmap data to {width}x{height}")
-            except ValueError as e:
-                self.get_logger().error(f"Cannot reshape data: {e}")
-                return False
-            
-            # Extract metadata for display
-            resolution = metadata['resolution']
-            origin_x = metadata['origin']['position']['x']
-            origin_y = metadata['origin']['position']['y']
-            
-            # Create visualization image (invert costmap for better visibility)
-            # Costmap values: 0 (free) -> 255 (occupied), so we invert for visualization
-            image = 255 - data  # Invert the costmap for better visualization
-            
-            # Convert to color image for metadata overlay
-            color_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
-            
-            # Add metadata overlay
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.6
-            thickness = 1
-            color = (0, 255, 0)  # Green text
-            
-            # Background rectangle for better text visibility
-            overlay = color_image.copy()
-            cv2.rectangle(overlay, (10, 10), (400, 120), (0, 0, 0), -1)  # Black background
-            cv2.addWeighted(color_image, 0.8, overlay, 0.2, 0, color_image)
-            
-            # Add metadata text
-            y_offset = 30
-            text_lines = [
-                f"Size: {width} x {height} pixels",
-                f"Resolution: {resolution:.3f} m/pixel", 
-                f"Origin: ({origin_x:.2f}, {origin_y:.2f}) m",
-                f"World bounds: [{origin_x:.1f}, {origin_x + width*resolution:.1f}] x [{origin_y:.1f}, {origin_y + height*resolution:.1f}] m"
-            ]
-            
-            for line in text_lines:
-                cv2.putText(color_image, line, (15, y_offset), font, font_scale, color, thickness)
-                y_offset += 20
-            
-            # Add scale indicator (if image is large enough)
-            if width > 200 and height > 100:
-                # Draw a scale bar (100 pixels = 100 * resolution meters)
-                scale_length_pixels = 100
-                scale_length_meters = scale_length_pixels * resolution
-                
-                # Scale bar position (bottom right)
-                bar_x = width - 120
-                bar_y = height - 30
-                
-                # Draw scale bar
-                cv2.line(color_image, (bar_x, bar_y), (bar_x + scale_length_pixels, bar_y), (255, 255, 0), 3)
-                cv2.putText(color_image, f"{scale_length_meters:.1f}m", (bar_x, bar_y - 10), 
-                           font, 0.5, (255, 255, 0), thickness)
-            
-            # Save the image
-            cv2.imwrite(filename, color_image)
-            self.get_logger().info(f'Successfully saved costmap image: {filename}')
-            
-            # Also save a raw grayscale version
-            raw_filename = filename.replace('.png', '_raw.png')
-            cv2.imwrite(raw_filename, image)
-            self.get_logger().info(f'Also saved raw costmap: {raw_filename}')
-            
-            return True
-            
-        except Exception as e:
-            self.get_logger().error(f'Error saving costmap image: {str(e)}')
-            return False
+
 
     def process_costmap(self, msg):
         free_contours_world = []  # Initialize at the start
@@ -971,6 +838,7 @@ class CoverageNavigatorTester(Node):
                 'uid': f'wp_{index}',
             }
             ros_data['wps'].append(wp)
+            ros_data['stop_on_failure'] = False
             index += 1
         url = "{}/execute_task".format(flask_ros_url)
         
