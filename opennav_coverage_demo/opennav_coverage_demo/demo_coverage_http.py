@@ -904,6 +904,7 @@ class CoverageNavigatorTester(Node):
                                swath_allow_overlap=False,
                                swath_set_angle=0.0,
                                route_mode="AUTO",
+                               route_start=None,
                                route_spiral=2,
                                route_custom_order=[]
                                ):
@@ -955,6 +956,9 @@ class CoverageNavigatorTester(Node):
         # Step 4: Plan route
         if route_mode == "AUTO":    
             route_planner = f2c.RP_RoutePlannerBase()
+            if route_start is not None:
+                start_point = f2c.Point(route_start[0], route_start[1])
+                route_planner.setStartAndEndPoint(start_point)
             route = route_planner.genRoute(no_hl_decomp, swaths)
         elif route_mode == "BOUSTROPHEDON":
             route_planner = f2c.RP_Boustrophedon()
@@ -1131,6 +1135,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     swath_step_angle= step_angle,
                     swath_obj= objective,
                     route_mode= data.get('route_mode', 'AUTO'),
+                    route_start= data.get('route_start', None),
                     route_spiral= data.get('route_spiral', 2),
                     route_custom_order= data.get('route_custom_order', [])
 
@@ -1167,7 +1172,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                         else:
                             self.visualize_field_polygon(field, "cropped_free_space_with_routes", coverage_routes=self.current_routes)
 
-                return jsonify({"code": 0, "path": None, "status": "导航任务已启动"}), 202
+                return jsonify({"code": 0, "path": self.current_waypoints, "status": "导航任务已启动"}), 202
             except Exception as e:
                 logging.exception("处理导航请求时出错:")
                 return jsonify({"code": 1, "error": f"服务器处理请求时发生错误: {str(e)}"}), 500
