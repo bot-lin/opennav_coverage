@@ -1172,7 +1172,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                         else:
                             self.visualize_field_polygon(field, "cropped_free_space_with_routes", coverage_routes=self.current_routes)
 
-                return jsonify({"code": 0, "path": self.current_waypoints, "status": "导航任务已启动"}), 202
+                return jsonify({"code": 0, "path": self.current_routes, "status": "导航任务已启动"}), 202
             except Exception as e:
                 logging.exception("处理导航请求时出错:")
                 return jsonify({"code": 1, "error": f"服务器处理请求时发生错误: {str(e)}"}), 500

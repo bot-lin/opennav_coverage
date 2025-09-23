@@ -108,19 +108,39 @@
   "code": 0,
   "path": [
     {
-      "x": 15.5,
-      "y": 25.3,
-      "z": 0.0
+      "start": [1.1, -20.9],
+      "end": [1.1, -8.2],
+      "segment_index": 0,
+      "swath_index": 0
     },
     {
-      "x": 45.2,
-      "y": 25.3,
-      "z": 0.0
+      "start": [1.9, -8.2],
+      "end": [1.9, -20.9],
+      "segment_index": 1,
+      "swath_index": 0
+    },
+    {
+      "start": [2.7, -20.9],
+      "end": [2.7, -8.2],
+      "segment_index": 2,
+      "swath_index": 0
     }
   ],
   "status": "导航任务已启动"
 }
 ```
+
+#### 响应字段说明
+
+| 字段名 | 类型 | 描述 |
+|--------|------|------|
+| `code` | Number | 响应码，0表示成功，1表示失败 |
+| `path` | Array | 覆盖路径段数组，每个路径段包含以下字段： |
+| `path[].start` | Array | 路径段起始点坐标 [x, y] |
+| `path[].end` | Array | 路径段结束点坐标 [x, y] |
+| `path[].segment_index` | Number | 路径段在整个路径中的序号 |
+| `path[].swath_index` | Number | 路径段所属的覆盖条带序号 |
+| `status` | String | 任务状态描述信息 |
 
 **错误响应** (HTTP 400/404/500):
 ```json
