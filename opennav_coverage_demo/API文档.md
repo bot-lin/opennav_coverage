@@ -237,6 +237,139 @@
 
 ---
 
+### 3. 前端配置管理接口
+
+#### 3.1 保存配置接口
+
+**接口名称**: 保存前端配置  
+**请求方式**: `POST`  
+**请求地址**: `/save_config`  
+**Content-Type**: `application/json`
+
+**请求参数**:
+
+| 参数名 | 类型 | 必填 | 描述 |
+|--------|------|------|------|
+| `config_name` | String | ✅ | 配置名称（作为保存的文件名） |
+| `config_data` | Object | ✅ | 前端配置数据（任意JSON对象） |
+
+**请求示例**:
+```json
+{
+  "config_name": "farm_field_config_1",
+  "config_data": {
+    "robot_width": 1.5,
+    "robot_op_width": 2.0,
+    "headland_width": 2.5,
+    "swath_angle": 45,
+    "field_boundaries": [[10, 20], [50, 20], [50, 60], [10, 60]],
+    "ui_settings": {
+      "theme": "dark",
+      "language": "zh"
+    }
+  }
+}
+```
+
+**成功响应** (HTTP 200):
+```json
+{
+  "code": 0,
+  "status": "配置保存成功",
+  "config_name": "farm_field_config_1",
+  "file_path": "/path/to/frontend_configs/farm_field_config_1.json"
+}
+```
+
+#### 3.2 加载配置接口
+
+**接口名称**: 加载前端配置  
+**请求方式**: `GET`  
+**请求地址**: `/load_config/{config_name}`
+
+**路径参数**:
+- `config_name`: 要加载的配置名称
+
+**成功响应** (HTTP 200):
+```json
+{
+  "code": 0,
+  "status": "配置加载成功",
+  "config_name": "farm_field_config_1",
+  "saved_time": 1695123456.789,
+  "config_data": {
+    "robot_width": 1.5,
+    "robot_op_width": 2.0,
+    "headland_width": 2.5,
+    "swath_angle": 45,
+    "field_boundaries": [[10, 20], [50, 20], [50, 60], [10, 60]],
+    "ui_settings": {
+      "theme": "dark",
+      "language": "zh"
+    }
+  }
+}
+```
+
+#### 3.3 列出所有配置接口
+
+**接口名称**: 列出所有前端配置  
+**请求方式**: `GET`  
+**请求地址**: `/list_configs`
+
+**成功响应** (HTTP 200):
+```json
+{
+  "code": 0,
+  "status": "找到 3 个配置文件",
+  "configs": [
+    {
+      "config_name": "farm_field_config_1",
+      "saved_time": 1695123456.789,
+      "file_size": 1024
+    },
+    {
+      "config_name": "greenhouse_config",
+      "saved_time": 1695120000.123,
+      "file_size": 768
+    },
+    {
+      "config_name": "orchard_layout",
+      "saved_time": 1695110000.456,
+      "file_size": 1536
+    }
+  ]
+}
+```
+
+#### 3.4 删除配置接口
+
+**接口名称**: 删除前端配置  
+**请求方式**: `DELETE`  
+**请求地址**: `/delete_config/{config_name}`
+
+**路径参数**:
+- `config_name`: 要删除的配置名称
+
+**成功响应** (HTTP 200):
+```json
+{
+  "code": 0,
+  "status": "配置删除成功",
+  "config_name": "farm_field_config_1"
+}
+```
+
+**错误响应** (HTTP 400/404/500):
+```json
+{
+  "code": 1,
+  "error": "配置文件不存在: farm_field_config_1"
+}
+```
+
+---
+
 ## 使用流程
 
 ### 标准使用流程
@@ -270,6 +403,32 @@
   "use_user_field": false  // 使用代价地图自动提取自由空间
 }
 ```
+
+#### 前端配置管理工作流程
+
+1. **💾 保存配置**
+   ```bash
+   POST /save_config
+   # 保存当前前端的所有配置参数
+   ```
+
+2. **📋 查看所有配置**
+   ```bash
+   GET /list_configs
+   # 获取服务器上所有保存的配置列表
+   ```
+
+3. **📥 加载配置**
+   ```bash
+   GET /load_config/my_config_name
+   # 加载指定的配置并应用到前端
+   ```
+
+4. **🗑️ 删除配置**
+   ```bash
+   DELETE /delete_config/my_config_name
+   # 删除不需要的配置文件
+   ```
 
 ---
 
@@ -381,6 +540,47 @@ public void startNavigation() {
         sendPostRequest("http://服务器IP:1235/start_navigation", requestBody);
         
     } catch (JSONException e) {
+        e.printStackTrace();
+    }
+}
+
+// 保存前端配置
+public void saveConfig(String configName, JSONObject configData) {
+    JSONObject requestBody = new JSONObject();
+    try {
+        requestBody.put("config_name", configName);
+        requestBody.put("config_data", configData);
+        
+        sendPostRequest("http://服务器IP:1235/save_config", requestBody);
+        
+    } catch (JSONException e) {
+        e.printStackTrace();
+    }
+}
+
+// 加载前端配置
+public void loadConfig(String configName) {
+    try {
+        sendGetRequest("http://服务器IP:1235/load_config/" + configName);
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}
+
+// 列出所有配置
+public void listConfigs() {
+    try {
+        sendGetRequest("http://服务器IP:1235/list_configs");
+    } catch (Exception e) {
+        e.printStackTrace();
+    }
+}
+
+// 删除配置
+public void deleteConfig(String configName) {
+    try {
+        sendDeleteRequest("http://服务器IP:1235/delete_config/" + configName);
+    } catch (Exception e) {
         e.printStackTrace();
     }
 }
