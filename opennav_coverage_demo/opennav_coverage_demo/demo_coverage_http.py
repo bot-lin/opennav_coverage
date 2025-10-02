@@ -809,42 +809,87 @@ class CoverageNavigatorTester(Node):
             }
         index = 0
         for waypoint in waypoints:
-            actions = []
-            precise_xy = default_precise_xy
-            if index == 0 and wait_at_first_waypoint:
-                actions.append({
-                    'name': 'wait_for_command',
-                    'id': 13
-                })
-                precise_xy = 0.12
-                allow_reverse = True
-            else:
-                allow_reverse = False
+            # Only process first waypoint (index 0) and odd-indexed waypoints (1, 3, 5, ...)
+            if index == 0 or index % 2 == 1:
+                actions = []
+                precise_xy = default_precise_xy
+                if index == 0 and wait_at_first_waypoint:
+                    actions.append({
+                        'name': 'wait_for_command',
+                        'id': 13
+                    })
+                    precise_xy = 0.12
+                    allow_reverse = True
+                else:
+                    allow_reverse = False
                 
-         
-            wp = {
-                'pose': {
-                    'position': {
-                        'x': waypoint.x,
-                        'y': waypoint.y
+                # Add rotation and forward movement actions for odd-indexed waypoints (since we start from index 0)
+                if index % 2 == 1 and index < len(waypoints) - 1:  # Odd index and not the last waypoint
+                    # Robot's current orientation is the vector from previous waypoint to current waypoint
+                    current_wp = waypoint
+                    prev_wp = waypoints[index - 1]
+                    next_wp = waypoints[index + 1]
+                    
+                    # Calculate robot's current heading (from previous to current waypoint)
+                    current_heading_x = current_wp.x - prev_wp.x
+                    current_heading_y = current_wp.y - prev_wp.y
+                    
+                    # Calculate vector to next waypoint
+                    to_next_x = next_wp.x - current_wp.x
+                    to_next_y = next_wp.y - current_wp.y
+                    
+                    # Use cross product to determine if next waypoint is to the right or left
+                    # Cross product: current_heading × to_next = (hx * ny - hy * nx)
+                    cross_product = current_heading_x * to_next_y - current_heading_y * to_next_x
+                    
+                    # If cross_product > 0: next waypoint is to the left (counter-clockwise)
+                    # If cross_product < 0: next waypoint is to the right (clockwise)
+                    rotate_action = None
+                    if cross_product > 0:  # Next waypoint is to the left
+                        # Rotate 90 degrees to the left (counter-clockwise)
+                        rotate_action = 'rotate_left90'
+     
+                    else:  # Next waypoint is to the right
+                        # Rotate 90 degrees to the right (clockwise)
+                        rotate_action = 'rotate_right90'
+
+                    actions.append({
+                        'name': rotate_action,
+                    })
+                    # Add forward movement action (0.5m)
+                    actions.append({
+                        'name': 'move_forward',
+                    })
+                    actions.append({
+                        'name': rotate_action,
+                    })
+
+                    
+             
+                wp = {
+                    'pose': {
+                        'position': {
+                            'x': waypoint.x,
+                            'y': waypoint.y
+                        },
+                        'orientation': {
+                            'z': 0.0,
+                            'w': 1.0
+                        }
                     },
-                    'orientation': {
-                        'z': 0.0,
-                        'w': 1.0
-                    }
-                },
-                'is_dest': True,
-                'precise_xy': precise_xy,
-                'precise_rad': 6.28,
-                'nav_type': path_planner,
-                'actions': actions,
-                'is_reverse': False,
-                'allow_reverse': allow_reverse,
-                'inflation_radius': inflation_radius,
-                'uid': f'wp_{index}',
-            }
-            ros_data['wps'].append(wp)
-            ros_data['stop_on_failure'] = False
+                    'is_dest': True,
+                    'precise_xy': precise_xy,
+                    'precise_rad': 6.28,
+                    'nav_type': path_planner,
+                    'actions': actions,
+                    'is_reverse': False,
+                    'allow_reverse': allow_reverse,
+                    'inflation_radius': inflation_radius,
+                    'uid': f'wp_{index}',
+                }
+                ros_data['wps'].append(wp)
+                ros_data['stop_on_failure'] = False
+            
             index += 1
         url = "{}/execute_task".format(flask_ros_url)
         
