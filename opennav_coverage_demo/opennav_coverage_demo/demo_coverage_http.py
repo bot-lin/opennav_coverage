@@ -1014,9 +1014,6 @@ class CoverageNavigatorTester(Node):
                     ux = dx / current_length
                     uy = dy / current_length
                     
-                    # Extend by extension_length (replace with your actual value or variable)
-                    extension_length = 
-                    
                     # New end point coordinates
                     new_ex = end_point.X() + ux * extension_length
                     new_ey = end_point.Y() + uy * extension_length
