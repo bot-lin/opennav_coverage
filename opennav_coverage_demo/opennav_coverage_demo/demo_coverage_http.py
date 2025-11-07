@@ -37,6 +37,8 @@ import cv2
 import numpy as np
 import fields2cover as f2c
 from geometry_msgs.msg import Point32
+import xml.etree.ElementTree as ET
+import re
 # from opennav_coverage_demo.robot_nagivator import BasicNavigator
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -796,6 +798,31 @@ class CoverageNavigatorTester(Node):
 
 
 
+    def update_move_forward_xml(self, robot_op_width):
+        """Update the move_forward.xml file with the robot operation width"""
+        try:
+            xml_file_path = "/data/actions/move_forward.xml"
+            
+            # Read the XML file
+            with open(xml_file_path, 'r') as f:
+                content = f.read()
+            
+            # Use regex to replace the distance value in param_json
+            # Pattern matches: distance:number (including decimal)
+            pattern = r'distance:[0-9]*\.?[0-9]+'
+            replacement = f'distance:{robot_op_width}'
+            
+            updated_content = re.sub(pattern, replacement, content)
+            
+            # Write back to file
+            with open(xml_file_path, 'w') as f:
+                f.write(updated_content)
+            
+            self.get_logger().info(f"Updated move_forward.xml with distance: {robot_op_width}")
+            
+        except Exception as e:
+            self.get_logger().error(f"Failed to update move_forward.xml: {str(e)}")
+
     def destroy_node(self):
         super().destroy_node()
 
@@ -1196,11 +1223,15 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     repeat_times = 1
 
 
+                # Update move_forward.xml with robot_op_width before generating coverage path
+                robot_op_width = data.get('robot_op_width', 1.0)
+                self.update_move_forward_xml(robot_op_width)
+
                 cells = self.toPolygon(field, data['rings'])
                 self.generate_coverage_path(
                     cells=cells,
                     robot_width= data.get('robot_width', 1.0),
-                    robot_op_width= data.get('robot_op_width', 1.0),
+                    robot_op_width= robot_op_width,
                     robot_min_turning_radius= data.get('robot_min_turning_radius', 1e-8),
                     robot_max_diff_curvature= data.get('robot_max_diff_curvature', 1e8),
                     robot_cruise_vel= data.get('robot_cruise_vel', 0.5),
