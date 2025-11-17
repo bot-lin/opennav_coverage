@@ -856,26 +856,26 @@ class CoverageNavigatorTester(Node):
                     current_wp = waypoint
                     prev_wp = waypoints[index - 1]
                     next_wp = waypoints[index + 1]
-                    
+
                     # Calculate robot's current heading (from previous to current waypoint)
                     current_heading_x = current_wp.x - prev_wp.x
                     current_heading_y = current_wp.y - prev_wp.y
-                    
+
                     # Calculate vector to next waypoint
                     to_next_x = next_wp.x - current_wp.x
                     to_next_y = next_wp.y - current_wp.y
-                    
+
                     # Use cross product to determine if next waypoint is to the right or left
                     # Cross product: current_heading × to_next = (hx * ny - hy * nx)
                     cross_product = current_heading_x * to_next_y - current_heading_y * to_next_x
-                    
+
                     # If cross_product > 0: next waypoint is to the left (counter-clockwise)
                     # If cross_product < 0: next waypoint is to the right (clockwise)
                     rotate_action = None
                     if cross_product > 0:  # Next waypoint is to the left
                         # Rotate 90 degrees to the left (counter-clockwise)
                         rotate_action = 'rotate_left90'
-     
+
                     else:  # Next waypoint is to the right
                         # Rotate 90 degrees to the right (clockwise)
                         rotate_action = 'rotate_right90'
@@ -891,8 +891,24 @@ class CoverageNavigatorTester(Node):
                         'name': rotate_action,
                     })
 
-                    
-             
+                    # Set precise_rad to 0.03 for odd index waypoints
+                    precise_rad = 0.03
+
+                    # Calculate target orientation as the direction from previous waypoint to current waypoint
+                    dx = current_wp.x - prev_wp.x
+                    dy = current_wp.y - prev_wp.y
+                    target_yaw = math.atan2(dy, dx)
+
+                    # Convert yaw to quaternion (z, w components for 2D rotation)
+                    target_orientation_z = math.sin(target_yaw / 2.0)
+                    target_orientation_w = math.cos(target_yaw / 2.0)
+                else:
+                    precise_rad = 6.28
+                    target_orientation_z = 0.0
+                    target_orientation_w = 1.0
+
+
+
                 wp = {
                     'pose': {
                         'position': {
@@ -900,18 +916,18 @@ class CoverageNavigatorTester(Node):
                             'y': waypoint.y
                         },
                         'orientation': {
-                            'z': 0.0,
-                            'w': 1.0
+                            'z': target_orientation_z,
+                            'w': target_orientation_w
                         }
                     },
                     'is_dest': True,
                     'precise_xy': precise_xy,
-                    'precise_rad': 6.28,
+                    'precise_rad': precise_rad,
                     'nav_type': path_planner,
                     'actions': actions,
                     'is_reverse': False,
                     'allow_reverse': allow_reverse,
-                    'inflation_radius': inflation_radius,
+                    'inflation_radius': 0.7,
                     'uid': f'wp_{index}',
                 }
                 ros_data['wps'].append(wp)
@@ -1322,6 +1338,153 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             }), 200
 
 
+        @self.app.route('/save_config', methods=['POST'])
+        def handle_save_config():
+            """保存前端配置到服务器"""
+            try:
+                data = request.get_json()
+                if not data:
+                    return jsonify({"code": 1, "error": "请求体不能为空"}), 400
+                
+                config_name = data.get('config_name')
+                config_data = data.get('config_data')
+                
+                if not config_name:
+                    return jsonify({"code": 1, "error": "缺少配置名称 'config_name'"}), 400
+                
+                if not config_data:
+                    return jsonify({"code": 1, "error": "缺少配置数据 'config_data'"}), 400
+                
+                # 确保配置目录存在
+                config_dir = os.path.join(os.getcwd(), 'frontend_configs')
+                if not os.path.exists(config_dir):
+                    os.makedirs(config_dir)
+                
+                # 构建配置文件路径
+                config_file = os.path.join(config_dir, f"{config_name}.json")
+                
+                # 准备保存的数据，包含元数据
+                save_data = {
+                    "config_name": config_name,
+                    "saved_time": time.time(),
+                    "config_data": config_data
+                }
+                
+                # 保存配置到JSON文件
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    json.dump(save_data, f, ensure_ascii=False, indent=2)
+                
+                logging.info(f"配置已保存: {config_file}")
+                
+                return jsonify({
+                    "code": 0,
+                    "status": "配置保存成功",
+                    "config_name": config_name,
+                    "file_path": config_file
+                }), 200
+                
+            except Exception as e:
+                logging.exception("保存配置时出错:")
+                return jsonify({"code": 1, "error": f"保存配置失败: {str(e)}"}), 500
+
+        @self.app.route('/load_config/<config_name>', methods=['GET'])
+        def handle_load_config(config_name):
+            """加载指定名称的前端配置"""
+            try:
+                config_dir = os.path.join(os.getcwd(), 'frontend_configs')
+                config_file = os.path.join(config_dir, f"{config_name}.json")
+                
+                if not os.path.exists(config_file):
+                    return jsonify({"code": 1, "error": f"配置文件不存在: {config_name}"}), 404
+                
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config_data = json.load(f)
+                
+                logging.info(f"配置已加载: {config_file}")
+                
+                return jsonify({
+                    "code": 0,
+                    "status": "配置加载成功",
+                    "config_name": config_data.get('config_name', config_name),
+                    "saved_time": config_data.get('saved_time'),
+                    "config_data": config_data.get('config_data')
+                }), 200
+                
+            except Exception as e:
+                logging.exception("加载配置时出错:")
+                return jsonify({"code": 1, "error": f"加载配置失败: {str(e)}"}), 500
+
+        @self.app.route('/list_configs', methods=['GET'])
+        def handle_list_configs():
+            """列出所有可用的前端配置"""
+            try:
+                config_dir = os.path.join(os.getcwd(), 'frontend_configs')
+                
+                if not os.path.exists(config_dir):
+                    return jsonify({
+                        "code": 0,
+                        "status": "没有找到配置文件",
+                        "configs": []
+                    }), 200
+                
+                configs = []
+                for filename in os.listdir(config_dir):
+                    if filename.endswith('.json'):
+                        config_name = filename[:-5]  # 移除.json后缀
+                        config_file = os.path.join(config_dir, filename)
+                        
+                        try:
+                            with open(config_file, 'r', encoding='utf-8') as f:
+                                config_data = json.load(f)
+                            
+                            configs.append({
+                                "config_name": config_name,
+                                "saved_time": config_data.get('saved_time'),
+                                "file_size": os.path.getsize(config_file)
+                            })
+                        except Exception as e:
+                            logging.warning(f"无法读取配置文件 {filename}: {str(e)}")
+                            continue
+                
+                # 按保存时间排序，最新的在前面
+                configs.sort(key=lambda x: x.get('saved_time', 0), reverse=True)
+                
+                logging.info(f"找到 {len(configs)} 个配置文件")
+                
+                return jsonify({
+                    "code": 0,
+                    "status": f"找到 {len(configs)} 个配置文件",
+                    "configs": configs
+                }), 200
+                
+            except Exception as e:
+                logging.exception("列出配置时出错:")
+                return jsonify({"code": 1, "error": f"列出配置失败: {str(e)}"}), 500
+
+        @self.app.route('/delete_config/<config_name>', methods=['DELETE'])
+        def handle_delete_config(config_name):
+            """删除指定名称的前端配置"""
+            try:
+                config_dir = os.path.join(os.getcwd(), 'frontend_configs')
+                config_file = os.path.join(config_dir, f"{config_name}.json")
+                
+                if not os.path.exists(config_file):
+                    return jsonify({"code": 1, "error": f"配置文件不存在: {config_name}"}), 404
+                
+                os.remove(config_file)
+                
+                logging.info(f"配置已删除: {config_file}")
+                
+                return jsonify({
+                    "code": 0,
+                    "status": "配置删除成功",
+                    "config_name": config_name
+                }), 200
+                
+            except Exception as e:
+                logging.exception("删除配置时出错:")
+                return jsonify({"code": 1, "error": f"删除配置失败: {str(e)}"}), 500
+            
 
     def run_server(self, host='0.0.0.0', port=1235):  # 修改端口为1235
         """启动HTTP服务器。"""
