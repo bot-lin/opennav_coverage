@@ -846,10 +846,6 @@ class CoverageNavigatorTester(Node):
                 actions = []
                 precise_xy = default_precise_xy
                 if index == 0 and allow_reverse_to_first_waypoint:
-                    actions.append({
-                        'name': 'wait_for_command',
-                        'id': 13
-                    })
                     precise_xy = 0.12
                     allow_reverse = True
                 else:
