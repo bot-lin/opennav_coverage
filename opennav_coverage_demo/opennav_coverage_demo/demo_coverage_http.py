@@ -826,7 +826,12 @@ class CoverageNavigatorTester(Node):
     def destroy_node(self):
         super().destroy_node()
 
-    def sendTaskRequest(self, waypoints, wait_at_first_waypoint=False, path_planner='straight', default_precise_xy=0.05, inflation_radius=0.1):
+    def sendTaskRequest(self, waypoints, 
+                        wait_at_first_waypoint=False, 
+                        path_planner='straight', 
+                        default_precise_xy=0.05, 
+                        inflation_radius=0.1,
+                        allow_reverse_to_first_waypoint=False):
         flask_ros_url = 'http://127.0.0.1:1234'
         ros_data = {
             "wps": [],
@@ -840,7 +845,7 @@ class CoverageNavigatorTester(Node):
             if index == 0 or index % 2 == 1:
                 actions = []
                 precise_xy = default_precise_xy
-                if index == 0 and wait_at_first_waypoint:
+                if index == 0 and allow_reverse_to_first_waypoint:
                     actions.append({
                         'name': 'wait_for_command',
                         'id': 13
@@ -872,13 +877,16 @@ class CoverageNavigatorTester(Node):
                     # If cross_product > 0: next waypoint is to the left (counter-clockwise)
                     # If cross_product < 0: next waypoint is to the right (clockwise)
                     rotate_action = None
+                    rotate_action2 = None
                     if cross_product > 0:  # Next waypoint is to the left
                         # Rotate 90 degrees to the left (counter-clockwise)
                         rotate_action = 'rotate_left90'
+                        rotate_action2 = 'rotate_left90_check_collision'
 
                     else:  # Next waypoint is to the right
                         # Rotate 90 degrees to the right (clockwise)
                         rotate_action = 'rotate_right90'
+                        rotate_action2 = 'rotate_right90_check_collision'
 
                     actions.append({
                         'name': rotate_action,
@@ -888,7 +896,7 @@ class CoverageNavigatorTester(Node):
                         'name': 'move_forward',
                     })
                     actions.append({
-                        'name': rotate_action,
+                        'name': rotate_action2,
                     })
 
                     # Set precise_rad to 0.03 for odd index waypoints
@@ -1319,13 +1327,19 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             path_planner = data.get('path_planner', 'straight')
             precise_xy = data.get('precise_xy', 0.08)
             inflation_radius = data.get('inflation_radius', 0.1)
+            allow_reverse_to_first_waypoint = data.get('allow_reverse_to_first_waypoint', False)
 
             if self.current_waypoints is None or len(self.current_waypoints) == 0:
                 return jsonify({
                     "code": 1,
                     "error": "没有可用的导航路径，请先调用 /navigate_coverage 接口"
                 }), 400
-            result = self.sendTaskRequest(self.current_waypoints, wait_at_first_waypoint=wait_at_first_waypoint, path_planner=path_planner, default_precise_xy=precise_xy, inflation_radius=inflation_radius)
+            result = self.sendTaskRequest(self.current_waypoints, 
+                                          wait_at_first_waypoint=wait_at_first_waypoint, 
+                                          path_planner=path_planner, 
+                                          default_precise_xy=precise_xy, 
+                                          inflation_radius=inflation_radius,
+                                          allow_reverse_to_first_waypoint=allow_reverse_to_first_waypoint)
             if result != 0:
                 return jsonify({
                     "code": 1,
