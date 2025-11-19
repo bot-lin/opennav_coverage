@@ -50,6 +50,8 @@ class CoverageNavigatorTester(Node):
         super().__init__(node_name='coverage_navigator_tester')
         self.current_costmap = None  # Initialize costmap storage
         self.current_routes = []  # Store coverage routes for visualization   
+        self.current_polygon = None  # Store current field polygon for visualization
+
     
     def call_clear_costmap_service(self):
         try:
@@ -831,13 +833,18 @@ class CoverageNavigatorTester(Node):
                         path_planner='straight', 
                         default_precise_xy=0.05, 
                         inflation_radius=0.1,
-                        allow_reverse_to_first_waypoint=False):
-        flask_ros_url = 'http://127.0.0.1:1234'
+                        allow_reverse_to_first_waypoint=False,
+                        task_name="default_task"):
+        flask_ros_url = 'http://127.0.0.1:1233'
         ros_data = {
             "wps": [],
+            "name": task_name,
+            "stop_on_failure": True,
             "is_repeat": False,
             "task_uid": "test_task",
-            "use_path_map": False
+            "use_path_map": False,
+            "repeat_times": 0,
+            "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes})
             }
         index = 0
         for waypoint in waypoints:
@@ -938,10 +945,14 @@ class CoverageNavigatorTester(Node):
                 ros_data['stop_on_failure'] = False
             
             index += 1
-        url = "{}/execute_task".format(flask_ros_url)
+        url = "{}/create_task".format(flask_ros_url)
         
         response = requests.post(url, json=ros_data)
-        return response.json()['code']
+        result_code = response.json()['code']
+        if result_code != 0:
+            return False, ''
+        else:
+            return True, response.json()['task_id']
 
     def startup(self, node_name='bt_navigator'):
         # Waits for the node within the tester namespace to become active
@@ -1177,6 +1188,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     return jsonify({"code": 1,"error": "缺少'field'字段"}), 400
                     
                 user_field = data['field']
+                self.current_polygon = user_field
                 if not isinstance(user_field, list) or len(user_field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
                 
@@ -1322,6 +1334,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             wait_at_first_waypoint = data.get('wait_at_first_waypoint', False)
             path_planner = data.get('path_planner', 'straight')
             precise_xy = data.get('precise_xy', 0.08)
+            task_name = data.get('task_name', 'coverage_task')
             inflation_radius = data.get('inflation_radius', 0.1)
             allow_reverse_to_first_waypoint = data.get('allow_reverse_to_first_waypoint', False)
 
@@ -1330,21 +1343,23 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     "code": 1,
                     "error": "没有可用的导航路径，请先调用 /navigate_coverage 接口"
                 }), 400
-            result = self.sendTaskRequest(self.current_waypoints, 
+            result, task_id = self.sendTaskRequest(self.current_waypoints, 
                                           wait_at_first_waypoint=wait_at_first_waypoint, 
                                           path_planner=path_planner, 
                                           default_precise_xy=precise_xy, 
                                           inflation_radius=inflation_radius,
-                                          allow_reverse_to_first_waypoint=allow_reverse_to_first_waypoint)
-            if result != 0:
+                                          allow_reverse_to_first_waypoint=allow_reverse_to_first_waypoint,
+                                          task_name=task_name)
+            if not result:
                 return jsonify({
                     "code": 1,
-                    "error": "导航任务请求失败，可能是服务器错误或路径问题"
+                    "error": "任务生成失败"
                 }), 500
             self.current_waypoints = None  # 清除当前路径，防止重复提交
             return jsonify({
                 "code": 0,
-                "status": "导航任务已开始"
+                "status": "任务生成成功",
+                "task_id": task_id
             }), 200
 
 
