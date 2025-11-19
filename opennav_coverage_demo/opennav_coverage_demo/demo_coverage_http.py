@@ -822,15 +822,16 @@ class CoverageNavigatorTester(Node):
             actions = []
             precise_xy = default_precise_xy
             if index == 0:
-                actions.append({
-                    'name': 'plc_task_1',
-                    'id': 13
-                })
                 precise_xy = 0.12
-            elif index == len(waypoints) - 1:
+            if index == len(waypoints) - 1:
                 actions.append({
                     'name': 'plc_task_2',
                     'id': 14
+                })
+            else:
+                actions.append({
+                    'name': 'plc_task_1',
+                    'id': 15
                 })
          
             wp = {
