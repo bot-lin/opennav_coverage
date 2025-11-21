@@ -699,12 +699,22 @@ class CoverageNavigatorTester(Node):
             polygon_contour = np.array(user_polygon_pixels, dtype=np.int32)
             cv2.fillPoly(mask, [polygon_contour], 255)
             
+            # Save mask for debugging
+            cv2.imwrite('debug_mask_user_polygon.png', mask)
+            self.get_logger().info('Saved debug_mask_user_polygon.png')
+            
             # Create binary image of free space (cost <= 50)
             free_space_binary = np.zeros_like(data, dtype=np.uint8)
             free_space_binary[data <= 50] = 255
             
+            # Save raw free space binary for debugging
+            cv2.imwrite('debug_binary_free_space.png', free_space_binary)
+            
             # Apply user polygon mask to only consider areas within the polygon
             cropped_free_space = cv2.bitwise_and(free_space_binary, mask)
+            
+            # Save cropped free space for debugging
+            cv2.imwrite('debug_cropped_free_space.png', cropped_free_space)
             
             # Clean up the binary image
             kernel = np.ones((3,3), np.uint8)
@@ -752,8 +762,14 @@ class CoverageNavigatorTester(Node):
             obstacle_binary = np.zeros_like(data, dtype=np.uint8)
             obstacle_binary[data >= 200] = 255  # High cost areas are obstacles
             
+            # Save raw obstacle binary
+            cv2.imwrite('debug_binary_obstacles.png', obstacle_binary)
+            
             # Apply user polygon mask to only consider obstacles within the polygon
             cropped_obstacles = cv2.bitwise_and(obstacle_binary, mask)
+            
+            # Save cropped obstacles
+            cv2.imwrite('debug_cropped_obstacles.png', cropped_obstacles)
             
             # Clean up the obstacle binary image
             cropped_obstacles = cv2.morphologyEx(cropped_obstacles, cv2.MORPH_CLOSE, kernel)
@@ -784,12 +800,35 @@ class CoverageNavigatorTester(Node):
             self.get_logger().info(f'Found {len(obstacle_polygons)} obstacles within the cropped area')
             
             # Save debug image with obstacles
+            # Convert to color image
             debug_image = cv2.cvtColor(cropped_free_space, cv2.COLOR_GRAY2BGR)
-            cv2.drawContours(debug_image, [largest_contour], -1, (0, 255, 0), 2)  # Green for free space
-            cv2.drawContours(debug_image, [polygon_contour], -1, (255, 0, 0), 2)  # Blue for user polygon
-            cv2.drawContours(debug_image, obstacle_contours, -1, (0, 0, 255), 2)  # Red for obstacles
+            
+            # Draw all candidate contours in light green
+            for contour in contours:
+                if cv2.contourArea(contour) > 100:
+                    cv2.drawContours(debug_image, [contour], -1, (144, 238, 144), 1)  # Light Green
+            
+            # Draw the largest contour (selected free space) in bright green with thicker line
+            if largest_contour is not None:
+                cv2.drawContours(debug_image, [largest_contour], -1, (0, 255, 0), 3)  # Bright Green
+                
+                # Add label for the largest area
+                M = cv2.moments(largest_contour)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    cv2.putText(debug_image, f"Selected Area: {largest_area_meters:.1f}m2", (cx - 50, cy), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            
+            # Draw user polygon in Blue
+            cv2.drawContours(debug_image, [polygon_contour], -1, (255, 0, 0), 2)  # Blue
+            
+            # Draw obstacles in Red
+            cv2.drawContours(debug_image, obstacle_contours, -1, (0, 0, 255), 2)  # Red
+            
+            # Save the enhanced debug image
             cv2.imwrite('cropped_costmap_analysis.png', debug_image)
-            self.get_logger().info('Saved debug image: cropped_costmap_analysis.png')
+            self.get_logger().info('Saved enhanced debug image: cropped_costmap_analysis.png')
             
             return world_polygon, obstacle_polygons
             
