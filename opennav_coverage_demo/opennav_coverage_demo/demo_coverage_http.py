@@ -834,7 +834,8 @@ class CoverageNavigatorTester(Node):
                         default_precise_xy=0.05, 
                         inflation_radius=0.1,
                         allow_reverse_to_first_waypoint=False,
-                        task_name="default_task"):
+                        task_name="default_task",
+                        map_id=0):  
         flask_ros_url = 'http://127.0.0.1:1233'
         ros_data = {
             "wps": [],
@@ -844,7 +845,8 @@ class CoverageNavigatorTester(Node):
             "task_uid": "test_task",
             "use_path_map": False,
             "repeat_times": 0,
-            "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes})
+            "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes}),
+            "map_id": map_id
             }
         index = 0
         for waypoint in waypoints:
@@ -1337,6 +1339,12 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             task_name = data.get('task_name', 'coverage_task')
             inflation_radius = data.get('inflation_radius', 0.1)
             allow_reverse_to_first_waypoint = data.get('allow_reverse_to_first_waypoint', False)
+            map_id = data.get('map_id', 0)
+            if map_id == 0:
+                return jsonify({
+                    "code": 1,
+                    "error": "需要提供Map ID参数"
+                }), 400
 
             if self.current_waypoints is None or len(self.current_waypoints) == 0:
                 return jsonify({
@@ -1349,7 +1357,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                                           default_precise_xy=precise_xy, 
                                           inflation_radius=inflation_radius,
                                           allow_reverse_to_first_waypoint=allow_reverse_to_first_waypoint,
-                                          task_name=task_name)
+                                          task_name=task_name,
+                                          map_id=map_id)
             if not result:
                 return jsonify({
                     "code": 1,
