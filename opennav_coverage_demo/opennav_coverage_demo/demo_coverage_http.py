@@ -806,10 +806,12 @@ class CoverageNavigatorTester(Node):
                         path_planner='straight', 
                         default_precise_xy=0.05, 
                         inflation_radius=0.1,
-                        task_name="default_task"):
+                        task_name="default_task",
+                        map_id=0):
         flask_ros_url = 'http://127.0.0.1:1233'
         ros_data = {
             "wps": [],
+            "map_id": map_id,
             "name": task_name,
             "stop_on_failure": True,
             "is_repeat": False,
@@ -1240,8 +1242,13 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             path_planner = data.get('path_planner', 'straight')
             precise_xy = data.get('precise_xy', 0.08)
             task_name = data.get('task_name', 'coverage_task')
+            map_id = data.get('map_id', 0)
             inflation_radius = data.get('inflation_radius', 0.1)
-
+            if map_id == 0:
+                return jsonify({
+                    "code": 1,
+                    "error": "需要提供Map ID参数"
+                }), 400
             if self.current_waypoints is None or len(self.current_waypoints) == 0:
                 return jsonify({
                     "code": 1,
@@ -1253,7 +1260,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 path_planner=path_planner, 
                 default_precise_xy=precise_xy, 
                 inflation_radius=inflation_radius,
-                task_name=task_name
+                task_name=task_name,
+                map_id=map_id
                 )
             if not result:
                 return jsonify({
