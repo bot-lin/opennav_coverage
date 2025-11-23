@@ -36,6 +36,8 @@ import math
 import cv2
 import numpy as np
 import fields2cover as f2c
+from shapely.geometry import Polygon as ShapelyPolygon, LinearRing
+from shapely.validation import make_valid
 from geometry_msgs.msg import Point32
 import xml.etree.ElementTree as ET
 import re
@@ -743,8 +745,14 @@ class CoverageNavigatorTester(Node):
                 return None, []
             
             # Simplify the polygon to reduce number of points
-            epsilon = 0.01 * cv2.arcLength(largest_contour, True)
+            # With Shapely validation in place, we can use a reasonable epsilon
+            epsilon = 0.005 * cv2.arcLength(largest_contour, True)
             simplified_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
+            
+            # Check if simplified contour is valid (not too few points)
+            if len(simplified_contour) < 3:
+                self.get_logger().warn("Simplified contour has too few points, using original contour")
+                simplified_contour = largest_contour
             
             # Convert the simplified contour back to world coordinates
             world_polygon = []
@@ -783,7 +791,8 @@ class CoverageNavigatorTester(Node):
             for obstacle_contour in obstacle_contours:
                 if cv2.contourArea(obstacle_contour) > 25:  # Minimum obstacle size threshold
                     # Simplify the obstacle polygon
-                    epsilon = 0.02 * cv2.arcLength(obstacle_contour, True)
+                    # With Shapely validation, we can use normal simplification
+                    epsilon = 0.005 * cv2.arcLength(obstacle_contour, True)
                     simplified_obstacle = cv2.approxPolyDP(obstacle_contour, epsilon, True)
                     
                     # Convert to world coordinates
@@ -1023,17 +1032,137 @@ class CoverageNavigatorTester(Node):
         return
 
     def toPolygon(self, field, rings):
+        """
+        Convert field and rings (obstacles) to Fields2Cover Cells object.
+        Uses Shapely to fix any invalid geometries (self-intersections) before conversion.
+        """
+        try:
+            # 1. Create and fix outer polygon using Shapely
+            if not field:
+                return f2c.Cells()
+                
+            # Ensure closed ring for shapely
+            outer_coords = list(field)
+            if len(outer_coords) > 0 and (outer_coords[0] != outer_coords[-1]):
+                outer_coords.append(outer_coords[0])
+                
+            poly = ShapelyPolygon(outer_coords)
+            
+            # Fix invalid geometry (buffer(0) trick or make_valid)
+            if not poly.is_valid:
+                self.get_logger().warn(f"Outer polygon is invalid: {poly.is_valid.reason if hasattr(poly, 'is_valid') else 'unknown'}. Fixing...")
+                poly = make_valid(poly)
+                # If result is MultiPolygon, take the largest one
+                if poly.geom_type == 'MultiPolygon':
+                    poly = max(poly.geoms, key=lambda a: a.area)
+                elif poly.geom_type == 'GeometryCollection':
+                     # Extract Polygons from collection
+                    polys = [g for g in poly.geoms if g.geom_type == 'Polygon']
+                    if polys:
+                        poly = max(polys, key=lambda a: a.area)
+                    else:
+                        self.get_logger().error("Failed to fix polygon: No polygon found in fixed geometry")
+                        return f2c.Cells()
+            
+            # 2. Process obstacles (holes)
+            valid_holes = []
+            for ring in rings:
+                if not ring:
+                    continue
+                    
+                # Ensure closed ring
+                hole_coords = list(ring)
+                if len(hole_coords) > 0 and (hole_coords[0] != hole_coords[-1]):
+                    hole_coords.append(hole_coords[0])
+                
+                hole_poly = ShapelyPolygon(hole_coords)
+                
+                if not hole_poly.is_valid:
+                    hole_poly = make_valid(hole_poly)
+                    if hole_poly.geom_type == 'MultiPolygon':
+                        # If obstacle splits, add all parts
+                        for part in hole_poly.geoms:
+                            valid_holes.append(part)
+                        continue
+                    elif hole_poly.geom_type == 'GeometryCollection':
+                        for part in hole_poly.geoms:
+                            if part.geom_type == 'Polygon':
+                                valid_holes.append(part)
+                        continue
+                
+                valid_holes.append(hole_poly)
+
+            # 3. Subtract holes from the main polygon
+            # This handles cases where holes might overlap or be outside the main polygon
+            final_poly = poly
+            for hole in valid_holes:
+                try:
+                    final_poly = final_poly.difference(hole)
+                except Exception as e:
+                    self.get_logger().warn(f"Failed to subtract hole: {e}")
+
+            # 4. Convert back to Fields2Cover types
+            cells = f2c.Cells()
+            
+            def shapely_to_f2c_cell(shapely_poly):
+                # Extract exterior
+                ext_coords = list(shapely_poly.exterior.coords)
+                points = []
+                for x, y in ext_coords:
+                    points.append(f2c.Point(x, y))
+                
+                cell = f2c.Cell(f2c.LinearRing(f2c.VectorPoint(points)))
+                
+                # Extract interiors (holes)
+                for interior in shapely_poly.interiors:
+                    int_coords = list(interior.coords)
+                    hole_points = []
+                    for x, y in int_coords:
+                        hole_points.append(f2c.Point(x, y))
+                    cell.addRing(f2c.LinearRing(f2c.VectorPoint(hole_points)))
+                return cell
+
+            if final_poly.geom_type == 'Polygon':
+                cells.addGeometry(shapely_to_f2c_cell(final_poly))
+            elif final_poly.geom_type == 'MultiPolygon':
+                for part in final_poly.geoms:
+                    cells.addGeometry(shapely_to_f2c_cell(part))
+            
+            return cells
+            
+        except Exception as e:
+            self.get_logger().error(f"Error converting to F2C polygon: {str(e)}")
+            # Fallback to simple conversion if shapely fails
+            self.get_logger().warn("Falling back to simple conversion")
+            return self._toPolygon_simple(field, rings)
+
+    def _toPolygon_simple(self, field, rings):
+        """Original simple conversion method as fallback"""
         points = []
         for coord in field:
             p = f2c.Point(coord[0], coord[1])
             points.append(p)
+        
+        # Ensure outer ring is closed
+        if len(points) > 0 and (points[0].X() != points[-1].X() or points[0].Y() != points[-1].Y()):
+            points.append(points[0])
+            
         cell = f2c.Cell(f2c.LinearRing(f2c.VectorPoint(points)))
+        
         for ring in rings:
             r = f2c.LinearRing()
+            ring_points = []
             for coord in ring:
                 p = f2c.Point(coord[0], coord[1])
                 r.addPoint(p)
+                ring_points.append(p)
+            
+            # Ensure inner rings are closed
+            if len(ring_points) > 0 and (ring_points[0].X() != ring_points[-1].X() or ring_points[0].Y() != ring_points[-1].Y()):
+                r.addPoint(ring_points[0])
+            
             cell.addRing(r)
+            
         cells = f2c.Cells(cell)
         return cells
     
@@ -1069,8 +1198,16 @@ class CoverageNavigatorTester(Node):
 
         # Step 1: Decomposition
         if use_decomposition:
+            # Check for decomposition classes with error handling for older versions or different naming
             if decomposition_type == 'Boustrophedon':
-                decomp = f2c.DECOMP_BoustrophedonDecomp()
+                if hasattr(f2c, 'DECOMP_BoustrophedonDecomp'):
+                    decomp = f2c.DECOMP_BoustrophedonDecomp()
+                elif hasattr(f2c, 'DecompositionBoustrophedon'): # Alternative name
+                    decomp = f2c.DecompositionBoustrophedon()
+                else:
+                    self.get_logger().warn("Boustrophedon decomposition not found, falling back to Trapezoidal")
+                    decomp = f2c.DECOMP_TrapezoidalDecomp()
+                    decomp.setSplitAngle(0.5*math.pi)
             else:
                 decomp = f2c.DECOMP_TrapezoidalDecomp()
                 decomp.setSplitAngle(0.5*math.pi)
@@ -1099,36 +1236,149 @@ class CoverageNavigatorTester(Node):
             swaths = bf.generateBestSwaths(obj, coverage_width, no_hl_decomp)
         elif swath_mode == 'SET_ANGLE':
             swaths = bf.generateSwaths(swath_set_angle, coverage_width, no_hl_decomp)   
+            
+            # Optimize swaths: Combine adjacent collinear swaths
+            # This reduces the number of turns and waypoints
+            self.get_logger().info(f'Before optimization: {swaths.size()} swath segments')
+            
+            optimized_swaths_by_cells = f2c.SwathsByCells()
+            
+            for i in range(swaths.size()):
+                cell_swaths = swaths.at(i)
+                if cell_swaths.size() <= 1:
+                    optimized_swaths_by_cells.push_back(cell_swaths)
+                    continue
+                    
+                optimized_cell_swaths = f2c.Swaths()
+                current_swath = cell_swaths.at(0)
+                
+                for j in range(1, cell_swaths.size()):
+                    next_swath = cell_swaths.at(j)
+                    
+                    # Calculate direction vectors
+                    curr_dx = current_swath.endPoint().X() - current_swath.startPoint().X()
+                    curr_dy = current_swath.endPoint().Y() - current_swath.startPoint().Y()
+                    next_dx = next_swath.endPoint().X() - next_swath.startPoint().X()
+                    next_dy = next_swath.endPoint().Y() - next_swath.startPoint().Y()
+                    
+                    curr_len = math.sqrt(curr_dx**2 + curr_dy**2)
+                    next_len = math.sqrt(next_dx**2 + next_dy**2)
+                    
+                    if curr_len < 1e-3 or next_len < 1e-3:
+                        optimized_cell_swaths.push_back(current_swath)
+                        current_swath = next_swath
+                        continue
+                        
+                    # Normalize
+                    curr_dx /= curr_len
+                    curr_dy /= curr_len
+                    next_dx /= next_len
+                    next_dy /= next_len
+                    
+                    # Dot product close to 1 means parallel/collinear
+                    dot_prod = curr_dx * next_dx + curr_dy * next_dy
+                    
+                    # Check if they are connected (gap check)
+                    gap_x = next_swath.startPoint().X() - current_swath.endPoint().X()
+                    gap_y = next_swath.startPoint().Y() - current_swath.endPoint().Y()
+                    gap_dist = math.sqrt(gap_x**2 + gap_y**2)
+                    
+                    # Check if they are truly collinear (part of same line)
+                    # Parallel lines are not enough, they must align.
+                    # Vector from current end to next end must align with current direction
+                    conn_dx = next_swath.endPoint().X() - current_swath.endPoint().X()
+                    conn_dy = next_swath.endPoint().Y() - current_swath.endPoint().Y()
+                    conn_len = math.sqrt(conn_dx**2 + conn_dy**2)
+                    
+                    collinear_check = 0.0
+                    if conn_len > 1e-3:
+                        collinear_check = (conn_dx/conn_len) * curr_dx + (conn_dy/conn_len) * curr_dy
+                    
+                    # Conditions:
+                    # 1. Parallel (dot_prod ~ 1)
+                    # 2. Connected (gap_dist small)
+                    # 3. Aligned (collinear_check ~ 1) - prevents combining parallel tracks
+                    
+                    if dot_prod > 0.999 and collinear_check > 0.999:
+                        self.get_logger().info(f"Combining swaths in cell {i}: dot={dot_prod:.4f}, gap={gap_dist:.4f}, align={collinear_check:.4f}")
+                        combined_line = f2c.LineString()
+                        combined_line.addPoint(current_swath.startPoint())
+                        combined_line.addPoint(next_swath.endPoint())
+                        current_swath = f2c.Swath(combined_line, current_swath.getWidth(), current_swath.getId())
+                    else:
+                        optimized_cell_swaths.push_back(current_swath)
+                        current_swath = next_swath
+                
+                optimized_cell_swaths.push_back(current_swath)
+                # Add the optimized swaths for this cell to the collection
+                optimized_swaths_by_cells.push_back(optimized_cell_swaths)
+            
+            # Update swaths variable with optimized version
+            swaths = optimized_swaths_by_cells
+            self.get_logger().info(f'After optimization: {swaths.size()} swath segments (cells)')
+
         self.get_logger().info(f'生成 {swaths.size()} 组覆盖路径')
         swath_length = f2c.OBJ_SwathLength()
         self.get_logger().info(f'覆盖路径总长度约为 {swath_length.computeCost(no_hl_decomp, swaths):.2f} 米')  
 
         # Step 4: Plan route
+        vector_swaths = None
+        path_length = 0.0
+        
         if route_mode == "AUTO":    
             route_planner = f2c.RP_RoutePlannerBase()
             if route_start is not None:
                 start_point = f2c.Point(route_start[0], route_start[1])
                 route_planner.setStartAndEndPoint(start_point)
             route = route_planner.genRoute(no_hl_decomp, swaths)
-        elif route_mode == "BOUSTROPHEDON":
-            route_planner = f2c.RP_Boustrophedon()
-            route = route_planner.genSortedSwaths(swaths)
-        elif route_mode == "SNAKE":
-            route_planner = f2c.RP_Snake()
-            route = route_planner.genSortedSwaths(swaths)
-        elif route_mode == "SPIRAL":
-            route_planner = f2c.RP_Spiral(route_spiral)
-            route = route_planner.genSortedSwaths(swaths)
-        elif route_mode == "CUSTOM":
-            route_planner = f2c.RP_CustomOrder(route_custom_order)
-            route = route_planner.genSortedSwaths(swaths)
+            path_length = route.length()
+            vector_swaths = route.getVectorSwaths()
         else:
-            self.get_logger().error(f"未知的路线模式: {route_mode}, 使用自动模式")
-            route_planner = f2c.RP_RoutePlannerBase()
-            route = route_planner.genRoute(no_hl_decomp, swaths)
-        length = route.length()
-        self.get_logger().info(f'规划的路径总长度约为 {length:.2f} 米')
-        vector_swaths = route.getVectorSwaths()
+            # Handle pattern-based routing (per cell)
+            vector_swaths = f2c.SwathsByCells()
+            
+            for i in range(swaths.size()):
+                cell_swaths = swaths.at(i)
+                sorted_swaths = None
+                
+                if route_mode == "BOUSTROPHEDON":
+                    sorter = f2c.RP_Boustrophedon()
+                    sorted_swaths = sorter.genSortedSwaths(cell_swaths, 0)
+                elif route_mode == "SNAKE":
+                    sorter = f2c.RP_Snake()
+                    sorted_swaths = sorter.genSortedSwaths(cell_swaths, 0)
+                elif route_mode == "SPIRAL":
+                    sorter = f2c.RP_Spiral(route_spiral)
+                    sorted_swaths = sorter.genSortedSwaths(cell_swaths, 0)
+                elif route_mode == "CUSTOM":
+                    # If no custom order provided or length mismatch, generate a default sequential order
+                    # This prevents crashes if user doesn't know the exact number of swaths beforehand
+                    num_swaths = cell_swaths.size()
+                    current_order = route_custom_order
+                    
+                    if not current_order or len(current_order) != num_swaths:
+                        self.get_logger().warn(f"Custom order length ({len(current_order)}) mismatch with swaths count ({num_swaths}). Using sequential order.")
+                        current_order = list(range(num_swaths))
+                    
+                    # Validate that the order contains valid indices
+                    if not all(0 <= idx < num_swaths for idx in current_order) or len(set(current_order)) != num_swaths:
+                         self.get_logger().warn("Custom order contains invalid indices or duplicates. Using sequential order.")
+                         current_order = list(range(num_swaths))
+
+                    sorter = f2c.RP_CustomOrder(current_order)
+                    sorted_swaths = sorter.genSortedSwaths(cell_swaths, 0)
+                else:
+                    self.get_logger().error(f"Unknown route mode: {route_mode}, using original order")
+                    sorted_swaths = cell_swaths
+                
+                vector_swaths.push_back(sorted_swaths)
+                
+                # Approximate length (sum of swath lengths)
+                for k in range(sorted_swaths.size()):
+                    path_length += sorted_swaths.at(k).length()
+            
+        self.get_logger().info(f'规划的路径总长度约为 {path_length:.2f} 米')
+        # vector_swaths is already prepared
         size = vector_swaths.size()
         self.get_logger().info(f'路径包含 {size} 条覆盖路径段')
         self.current_waypoints = []
@@ -1192,8 +1442,13 @@ class CoverageNavigatorTester(Node):
 
         f2c.Visualizer.figure()
         f2c.Visualizer.plot(cells)
-        # f2c.Visualizer.plot(swaths)
-        f2c.Visualizer.plot(route)
+        
+        if route_mode == "AUTO":
+            f2c.Visualizer.plot(route)
+        elif vector_swaths is not None:
+            # Plot sorted swaths for non-auto modes
+            for i in range(vector_swaths.size()):
+                f2c.Visualizer.plot(vector_swaths.at(i))
 
         f2c.Visualizer.save("Tutorial_image.png")
 
@@ -1236,16 +1491,25 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 use_user_field = True
                 if 'use_user_field' in data:
                     use_user_field = data['use_user_field']
+                
                 field = None
+                obstacles_to_use = []
+
                 if use_user_field:
                     field = user_field
-                    self.visualize_field_polygon(field, "user_provided_field")
+                    obstacles_to_use = data.get('rings', [])
+                    self.visualize_field_polygon(field, "user_provided_field", obstacles_polygons=obstacles_to_use)
                     self.get_logger().info(f"Using user-provided field: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
                 else:
                     # Get the largest free space from costmap analysis
                     if self.call_get_costmap_service():
                         field, obstacles = self.crop_and_find_free_space(user_field)
                         if field:
+                            avoid_obstacles = data.get('avoid_obstacles', False)
+                            if avoid_obstacles:
+                                obstacles_to_use = obstacles
+                            else:
+                                obstacles_to_use = []
                             self.visualize_field_polygon(field, "cropped_free_space", obstacles)
                             self.get_logger().info(f"Using cropped free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
                             self.get_logger().info(f"Found {len(obstacles)} obstacles within the field")
@@ -1300,7 +1564,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 robot_op_width = data.get('robot_op_width', 1.0)
                 self.update_move_forward_xml(robot_op_width)
 
-                cells = self.toPolygon(field, data['rings'])
+                cells = self.toPolygon(field, obstacles_to_use)
                 self.generate_coverage_path(
                     cells=cells,
                     robot_width= data.get('robot_width', 1.0),
