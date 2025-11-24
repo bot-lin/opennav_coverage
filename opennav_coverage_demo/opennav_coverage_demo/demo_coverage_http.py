@@ -1059,7 +1059,8 @@ class CoverageNavigatorTester(Node):
                                route_start=None,
                                route_spiral=2,
                                route_custom_order=[],
-                               extension_length=0.08
+                               extension_length=0.08,
+                               repeat_times=0
                                ):
         robot = f2c.Robot(robot_width, robot_op_width)
         robot.setMinTurningRadius(robot_min_turning_radius)
@@ -1125,12 +1126,29 @@ class CoverageNavigatorTester(Node):
         elif route_mode == "CUSTOM":
             route_planner = f2c.RP_CustomOrder(route_custom_order)
             route = route_planner.genSortedSwaths(swaths)
+        elif route_mode == "REPEAT":
+            route = swaths
         else:
             self.get_logger().error(f"未知的路线模式: {route_mode}, 使用自动模式")
             route_planner = f2c.RP_RoutePlannerBase()
             route = route_planner.genRoute(no_hl_decomp, swaths)
         length = route.length()
         self.get_logger().info(f'规划的路径总长度约为 {length:.2f} 米')
+        # Step 6: Generate edgeways paths (contour path) from the field polygon
+        self.current_edge_waypoints = []
+        if cells.size() > 0:
+            cell = cells.getGeometry(0)
+            ring = cell.getGeometry(0) # Outer ring
+            for i in range(ring.size()):
+                pt = ring.getGeometry(i)
+                self.current_edge_waypoints.append(Point32(x=pt.X(), y=pt.Y(), z=0.0))
+            # Close the loop
+            if ring.size() > 0:
+                pt = ring.getGeometry(0)
+                self.current_edge_waypoints.append(Point32(x=pt.X(), y=pt.Y(), z=0.0))
+        
+        self.get_logger().info(f'Generated edge path with {len(self.current_edge_waypoints)} points')
+
         vector_swaths = route.getVectorSwaths()
         size = vector_swaths.size()
         self.get_logger().info(f'路径包含 {size} 条覆盖路径段')
@@ -1145,8 +1163,8 @@ class CoverageNavigatorTester(Node):
                  # Log start and end points of each swath
                 
                 start_point = swath.startPoint()
-                point = Point32(x=start_point.X(), y=start_point.Y(), z=0.0)
-                self.current_waypoints.append(point)
+                start_point1 = Point32(x=start_point.X(), y=start_point.Y(), z=0.0)
+                self.current_waypoints.append(start_point1)
                 end_point = swath.endPoint()
                 ####################################
                 # Calculate direction vector
@@ -1169,10 +1187,15 @@ class CoverageNavigatorTester(Node):
                     new_ex = end_point.X() + ux * extension_length
                     new_ey = end_point.Y() + uy * extension_length
                     
-                    point = Point32(x=new_ex, y=new_ey, z=0.0)
+                    end_point1 = Point32(x=new_ex, y=new_ey, z=0.0)
                 ####################################
                 # point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
-                self.current_waypoints.append(point)
+                self.current_waypoints.append(end_point1)
+                if route_mode == "REPEAT":
+                    for k in range(repeat_times):
+                        self.current_waypoints.append(start_point1)
+                        self.current_waypoints.append(end_point1)
+                    self.current_waypoints.append(start_point1) # always go back to the start point
                 
                 # Store route segment for visualization
                 route_segment = {
@@ -1248,10 +1271,17 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     if self.call_get_costmap_service():
                         field, obstacles = self.crop_and_find_free_space(user_field)
                         if field:
-                            obstacles_to_use = obstacles
-                            self.visualize_field_polygon(field, "cropped_free_space", obstacles)
-                            self.get_logger().info(f"Using cropped free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
-                            self.get_logger().info(f"Found {len(obstacles)} obstacles within the field")
+                            avoid_obstacles = data.get('avoid_obstacles', False)
+                            if avoid_obstacles:
+                                obstacles_to_use = obstacles
+                                self.visualize_field_polygon(field, "cropped_free_space", obstacles_to_use)
+                                self.get_logger().info(f"Using cropped free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
+                                self.get_logger().info(f"Found {len(obstacles)} obstacles within the field")
+                            else:
+                                obstacles_to_use = []
+                                self.visualize_field_polygon(field, "cropped_free_space", obstacles_to_use)
+                                self.get_logger().info(f"Using cropped free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
+                                self.get_logger().info(f"Found {len(obstacles)} obstacles within the field")
                      
                     
                 if not field:
@@ -1293,10 +1323,10 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 
                 if "repeat_times" in data:
                     repeat_times = data['repeat_times']
-                    if not isinstance(repeat_times, int) or repeat_times < 1:
+                    if not isinstance(repeat_times, int) or repeat_times < 0:
                         return jsonify({"code": 1,"error": "'repeat_times'必须是正整数"}), 400
                 else:
-                    repeat_times = 1
+                    repeat_times = 0
 
 
                 # Update move_forward.xml with robot_op_width before generating coverage path
@@ -1324,7 +1354,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     route_start= data.get('route_start', None),
                     route_spiral= data.get('route_spiral', 2),
                     route_custom_order= data.get('route_custom_order', []),
-                    extension_length= data.get('extension_length', 0.08)
+                    extension_length= data.get('extension_length', 0.08),
+                    repeat_times = repeat_times
 
                 )
 
@@ -1359,7 +1390,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                         else:
                             self.visualize_field_polygon(field, "cropped_free_space_with_routes", coverage_routes=self.current_routes)
 
-                return jsonify({"code": 0, "path": self.current_routes, "status": "导航任务已启动"}), 202
+                return jsonify({"code": 0, "path": self.current_routes, "edge_path": self.current_edge_waypoints, "status": "导航任务已启动"}), 202
             except Exception as e:
                 logging.exception("处理导航请求时出错:")
                 return jsonify({"code": 1, "error": f"服务器处理请求时发生错误: {str(e)}"}), 500
