@@ -1141,11 +1141,11 @@ class CoverageNavigatorTester(Node):
             ring = cell.getGeometry(0) # Outer ring
             for i in range(ring.size()):
                 pt = ring.getGeometry(i)
-                self.current_edge_waypoints.append(Point32(x=pt.X(), y=pt.Y(), z=0.0))
+                self.current_edge_waypoints.append([pt.X(), pt.Y()])
             # Close the loop
             if ring.size() > 0:
                 pt = ring.getGeometry(0)
-                self.current_edge_waypoints.append(Point32(x=pt.X(), y=pt.Y(), z=0.0))
+                self.current_edge_waypoints.append([pt.X(), pt.Y()])
         
         self.get_logger().info(f'Generated edge path with {len(self.current_edge_waypoints)} points')
 
