@@ -1331,7 +1331,6 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
 
                 # Update move_forward.xml with robot_op_width before generating coverage path
                 robot_op_width = data.get('robot_op_width', 1.0)
-                self.update_move_forward_xml(robot_op_width)
 
                 cells = self.toPolygon(field, obstacles_to_use)
                 self.generate_coverage_path(
