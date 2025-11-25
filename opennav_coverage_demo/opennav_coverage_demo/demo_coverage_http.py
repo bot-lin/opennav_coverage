@@ -873,7 +873,7 @@ class CoverageNavigatorTester(Node):
         response = requests.post(url, json=ros_data)
         result_code = response.json()['code']
         if result_code != 0:
-            return False, ''
+            return False, response.json()['error']
         else:
             return True, response.json()['task_id']
 
@@ -1435,7 +1435,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             if not result:
                 return jsonify({
                     "code": 1,
-                    "error": "任务生成失败"
+                    "error": task_id
                 }), 500
             self.current_waypoints = None  # 清除当前路径，防止重复提交
             return jsonify({
