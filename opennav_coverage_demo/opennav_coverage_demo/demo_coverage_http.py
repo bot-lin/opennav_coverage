@@ -826,7 +826,7 @@ class CoverageNavigatorTester(Node):
             "is_repeat": False,
             "use_path_map": False,
             "repeat_times": 0,
-            "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes})
+            "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes, "op_width": self.current_robot_op_width})
             }
         index = 0
         for waypoint in waypoints:
@@ -1331,12 +1331,13 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
 
                 # Update move_forward.xml with robot_op_width before generating coverage path
                 robot_op_width = data.get('robot_op_width', 1.0)
+                self.current_robot_op_width = robot_op_width
 
                 cells = self.toPolygon(field, obstacles_to_use)
                 self.generate_coverage_path(
                     cells=cells,
                     robot_width= data.get('robot_width', 1.0),
-                    robot_op_width= data.get('robot_op_width', 1.0),
+                    robot_op_width= robot_op_width,
                     robot_min_turning_radius= data.get('robot_min_turning_radius', 1e-8),
                     robot_max_diff_curvature= data.get('robot_max_diff_curvature', 1e8),
                     robot_cruise_vel= data.get('robot_cruise_vel', 0.5),
