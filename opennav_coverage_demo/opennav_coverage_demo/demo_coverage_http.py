@@ -893,7 +893,7 @@ class CoverageNavigatorTester(Node):
             "task_uid": "test_task",
             "use_path_map": False,
             "repeat_times": 0,
-            "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes}),
+            "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes, "op_width": self.current_robot_op_width}),
             "map_id": map_id
             }
         index = 0
@@ -1563,6 +1563,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 # Update move_forward.xml with robot_op_width before generating coverage path
                 robot_op_width = data.get('robot_op_width', 1.0)
                 self.update_move_forward_xml(robot_op_width)
+                self.current_robot_op_width = robot_op_width
 
                 cells = self.toPolygon(field, obstacles_to_use)
                 self.generate_coverage_path(
