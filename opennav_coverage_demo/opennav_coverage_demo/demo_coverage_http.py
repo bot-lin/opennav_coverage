@@ -811,12 +811,13 @@ class CoverageNavigatorTester(Node):
 
     def sendTaskRequest(self, 
                         waypoints, 
-                        wait_at_first_waypoint=False, 
                         path_planner='straight', 
                         default_precise_xy=0.05, 
                         inflation_radius=0.1,
                         task_name="default_task",
-                        map_id=0):
+                        map_id=0,
+                        plc_action_on_cancel=0,
+                        plc_action_on_fail=0):
         flask_ros_url = 'http://127.0.0.1:1233'
         ros_data = {
             "wps": [],
@@ -826,6 +827,8 @@ class CoverageNavigatorTester(Node):
             "is_repeat": False,
             "use_path_map": False,
             "repeat_times": 0,
+            "plc_action_on_cancel": plc_action_on_cancel,
+            "plc_action_on_fail": plc_action_on_fail,
             "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes, "op_width": self.current_robot_op_width})
             }
         index = 0
@@ -1407,7 +1410,6 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
         @self.app.route('/start_navigation', methods=['POST'])
         def handle_start_navigation():
             data = request.get_json()
-            wait_at_first_waypoint = data.get('wait_at_first_waypoint', False)
             path_planner = data.get('path_planner', 'straight')
             precise_xy = data.get('precise_xy', 0.08)
             task_name = data.get('task_name', 'coverage_task')
@@ -1425,12 +1427,13 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 }), 400
             result, task_id = self.sendTaskRequest(
                 self.current_waypoints, 
-                wait_at_first_waypoint=wait_at_first_waypoint, 
                 path_planner=path_planner, 
                 default_precise_xy=precise_xy, 
                 inflation_radius=inflation_radius,
                 task_name=task_name,
-                map_id=map_id
+                map_id=map_id,
+                plc_action_on_cancel=data.get('plc_action_on_cancel', 2),
+                plc_action_on_fail=data.get('plc_action_on_fail', 2)
                 )
             if not result:
                 return jsonify({
