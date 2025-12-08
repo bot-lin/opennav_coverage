@@ -816,8 +816,8 @@ class CoverageNavigatorTester(Node):
                         inflation_radius=0.1,
                         task_name="default_task",
                         map_id=0,
-                        plc_action_on_cancel=0,
-                        plc_action_on_fail=0):
+                        plc_task_on_cancel=0,
+                        plc_task_on_fail=0):
         flask_ros_url = 'http://127.0.0.1:1233'
         ros_data = {
             "wps": [],
@@ -827,8 +827,8 @@ class CoverageNavigatorTester(Node):
             "is_repeat": False,
             "use_path_map": False,
             "repeat_times": 0,
-            "plc_action_on_cancel": plc_action_on_cancel,
-            "plc_action_on_fail": plc_action_on_fail,
+            "plc_task_on_cancel": plc_task_on_cancel,
+            "plc_task_on_fail": plc_task_on_fail,
             "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes, "op_width": self.current_robot_op_width})
             }
         index = 0
@@ -1432,8 +1432,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 inflation_radius=inflation_radius,
                 task_name=task_name,
                 map_id=map_id,
-                plc_action_on_cancel=data.get('plc_action_on_cancel', 2),
-                plc_action_on_fail=data.get('plc_action_on_fail', 2)
+                plc_task_on_cancel=data.get('plc_task_on_cancel', 2),
+                plc_task_on_fail=data.get('plc_task_on_fail', 2)
                 )
             if not result:
                 return jsonify({
