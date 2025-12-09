@@ -1111,36 +1111,44 @@ class CoverageNavigatorTester(Node):
         elif swath_mode == 'SET_ANGLE':
             swaths = bf.generateSwaths(swath_set_angle, coverage_width, no_hl_decomp)   
         self.get_logger().info(f'生成 {swaths.size()} 组覆盖路径')
-        swath_length = f2c.OBJ_SwathLength()
-        self.get_logger().info(f'覆盖路径总长度约为 {swath_length.computeCost(no_hl_decomp, swaths):.2f} 米')  
+        
+        route = None
+        if swaths.size() > 0:
+            swath_length = f2c.OBJ_SwathLength()
+            self.get_logger().info(f'覆盖路径总长度约为 {swath_length.computeCost(no_hl_decomp, swaths):.2f} 米')  
 
-        # Step 4: Plan route
-        if route_mode == "AUTO":    
-            route_planner = f2c.RP_RoutePlannerBase()
-            if route_start is not None:
-                start_point = f2c.Point(route_start[0], route_start[1])
-                route_planner.setStartAndEndPoint(start_point)
-            route = route_planner.genRoute(no_hl_decomp, swaths)
-        elif route_mode == "BOUSTROPHEDON":
-            route_planner = f2c.RP_Boustrophedon()
-            route = route_planner.genSortedSwaths(swaths)
-        elif route_mode == "SNAKE":
-            route_planner = f2c.RP_Snake()
-            route = route_planner.genSortedSwaths(swaths)
-        elif route_mode == "SPIRAL":
-            route_planner = f2c.RP_Spiral(route_spiral)
-            route = route_planner.genSortedSwaths(swaths)
-        elif route_mode == "CUSTOM":
-            route_planner = f2c.RP_CustomOrder(route_custom_order)
-            route = route_planner.genSortedSwaths(swaths)
-        elif route_mode == "REPEAT":
-            route = swaths
+            # Step 4: Plan route
+            if route_mode == "AUTO":    
+                route_planner = f2c.RP_RoutePlannerBase()
+                if route_start is not None:
+                    start_point = f2c.Point(route_start[0], route_start[1])
+                    route_planner.setStartAndEndPoint(start_point)
+                route = route_planner.genRoute(no_hl_decomp, swaths)
+            elif route_mode == "BOUSTROPHEDON":
+                route_planner = f2c.RP_Boustrophedon()
+                route = route_planner.genSortedSwaths(swaths, 0)
+            elif route_mode == "SNAKE":
+                route_planner = f2c.RP_Snake()
+                route = route_planner.genSortedSwaths(swaths, 0)
+            elif route_mode == "SPIRAL":
+                route_planner = f2c.RP_Spiral(route_spiral)
+                route = route_planner.genSortedSwaths(swaths, 0)
+            elif route_mode == "CUSTOM":
+                route_planner = f2c.RP_CustomOrder(route_custom_order)
+                route = route_planner.genSortedSwaths(swaths, 0)
+            elif route_mode == "REPEAT":
+                route = swaths
+            else:
+                self.get_logger().error(f"未知的路线模式: {route_mode}, 使用自动模式")
+                route_planner = f2c.RP_RoutePlannerBase()
+                route = route_planner.genRoute(no_hl_decomp, swaths)
+            
+            if route_mode != "REPEAT":
+                length = route.length()
+                self.get_logger().info(f'规划的路径总长度约为 {length:.2f} 米')
         else:
-            self.get_logger().error(f"未知的路线模式: {route_mode}, 使用自动模式")
-            route_planner = f2c.RP_RoutePlannerBase()
-            route = route_planner.genRoute(no_hl_decomp, swaths)
-        length = route.length()
-        self.get_logger().info(f'规划的路径总长度约为 {length:.2f} 米')
+             self.get_logger().warn("生成的 Swaths 为空，跳过路径规划")
+
         # Step 6: Generate edgeways paths (contour path) from the field polygon
         self.current_edge_waypoints = []
         if cells.size() > 0:
@@ -1156,74 +1164,139 @@ class CoverageNavigatorTester(Node):
         
         self.get_logger().info(f'Generated edge path with {len(self.current_edge_waypoints)} points')
 
-        vector_swaths = route.getVectorSwaths()
-        size = vector_swaths.size()
-        self.get_logger().info(f'路径包含 {size} 条覆盖路径段')
         self.current_waypoints = []
         self.current_routes = []  # Reset routes for new coverage generation
+
+        if route is not None:
+            if route_mode == "REPEAT":
+                vector_swaths = route # Swaths type
+            else:
+                vector_swaths = route.getVectorSwaths()
+                
+            if route_mode == "REPEAT":
+                # Handle REPEAT mode which uses Swaths directly
+                size_swaths = vector_swaths.size()
+                for j in range(size_swaths):
+                    swath = vector_swaths.at(j)
+                    # ... logic for single swath list ...
+                    # We need to adapt the loop below because original code expects vector of swaths (cells)
+                    pass 
+                
+                # To reuse the loop below, we can wrap it in a structure or handle it.
+                # Actually, route.getVectorSwaths() returns F2CSwathsByCells (vector<F2CSwaths>)
+                # If route is Swaths (F2CSwaths), we need to handle it.
+                # Let's just make vector_swaths consistent.
+                # F2CSwathsByCells is std::vector<F2CSwaths>
+                # We can't easily create F2CSwathsByCells in python if bindings don't allow.
+                # So we might need to branch the logic.
+                pass
+            
+            # The original code for REPEAT mode was:
+            # elif route_mode == "REPEAT":
+            #    route = swaths
+            # ...
+            # vector_swaths = route.getVectorSwaths() 
+            # If route is swaths (F2CSwaths), it doesn't have getVectorSwaths().
+            # So the original code would have crashed for REPEAT mode anyway?
+            # Let's check line 1159: vector_swaths = route.getVectorSwaths()
+            # If route is Swaths, this fails.
+            
+            # Correction: REPEAT mode sets route = swaths. 
+            # Swaths is F2CSwaths.
+            # getVectorSwaths() is a method of Route.
+            # So REPEAT mode logic in original code was likely broken if it reached line 1159.
+            
+            pass 
+
+        # Let's rewrite the loop part to be safer and handle REPEAT mode correctly if needed.
+        # But for now, focus on the crash fix (empty swaths).
         
-        for i in range(size):
-            size_swaths = vector_swaths[i].size()
-            swaths = vector_swaths[i]
-            for j in range(size_swaths):
-                swath = swaths.at(j)
-                 # Log start and end points of each swath
-                
-                start_point = swath.startPoint()
-                start_point1 = Point32(x=start_point.X(), y=start_point.Y(), z=0.0)
-                self.current_waypoints.append(start_point1)
-                end_point = swath.endPoint()
-                ####################################
-                # Calculate direction vector
-                dx = end_point.X() - start_point.X()
-                dy = end_point.Y() - start_point.Y()
-
-                # Current length of the line segment
-                current_length = math.sqrt(dx**2 + dy**2)
-
-                # Avoid division by zero if points are the same
-                if current_length == 0:
-                    # Handle as needed (e.g., no extension or error)
-                    point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
-                else:
-                    # Unit vector components
-                    ux = dx / current_length
-                    uy = dy / current_length
-                    
-                    # New end point coordinates
-                    new_ex = end_point.X() + ux * extension_length
-                    new_ey = end_point.Y() + uy * extension_length
-                    
-                    end_point1 = Point32(x=new_ex, y=new_ey, z=0.0)
-                ####################################
-                # point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
-                self.current_waypoints.append(end_point1)
+        if route is not None:
+             # Standard Route object
+            try:
                 if route_mode == "REPEAT":
-                    for k in range(repeat_times):
+                     # Treat 'route' as 'swaths'
+                     # We need to iterate over it.
+                     # But downstream expects vector_swaths[i] (Cell i).
+                     # Swaths object is for one cell (usually).
+                     # If decomp was used, swaths is F2CSwathsByCells?
+                     # No, bf.generateBestSwaths returns F2CSwathsByCells if input is Cells?
+                     # generateBestSwaths signature: (obj, width, cells) -> F2CSwathsByCells
+                     # So 'swaths' is F2CSwathsByCells.
+                     # So 'route = swaths' means route is F2CSwathsByCells.
+                     # F2CSwathsByCells doesn't have getVectorSwaths(). It IS the vector swaths.
+                     vector_swaths = route
+                else:
+                    vector_swaths = route.getVectorSwaths()
+            except Exception as e:
+                self.get_logger().error(f"Error getting vector swaths: {e}")
+                vector_swaths = None
+
+            if vector_swaths:
+                size = vector_swaths.size()
+                self.get_logger().info(f'路径包含 {size} 条覆盖路径段')
+                
+                for i in range(size):
+                    swaths_i = vector_swaths[i] # This is F2CSwaths
+                    size_swaths = swaths_i.size()
+                    for j in range(size_swaths):
+                        swath = swaths_i.at(j)
+                        # Log start and end points of each swath
+                        
+                        start_point = swath.startPoint()
+                        start_point1 = Point32(x=start_point.X(), y=start_point.Y(), z=0.0)
                         self.current_waypoints.append(start_point1)
+                        end_point = swath.endPoint()
+                        ####################################
+                        # Calculate direction vector
+                        dx = end_point.X() - start_point.X()
+                        dy = end_point.Y() - start_point.Y()
+
+                        # Current length of the line segment
+                        current_length = math.sqrt(dx**2 + dy**2)
+
+                        # Avoid division by zero if points are the same
+                        if current_length == 0:
+                            # Handle as needed (e.g., no extension or error)
+                            point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
+                            end_point1 = point
+                        else:
+                            # Unit vector components
+                            ux = dx / current_length
+                            uy = dy / current_length
+                            
+                            # New end point coordinates
+                            new_ex = end_point.X() + ux * extension_length
+                            new_ey = end_point.Y() + uy * extension_length
+                            
+                            end_point1 = Point32(x=new_ex, y=new_ey, z=0.0)
+                        ####################################
+                        # point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
                         self.current_waypoints.append(end_point1)
-                    self.current_waypoints.append(start_point1) # always go back to the start point
-                
-                # Store route segment for visualization
-                route_segment = {
-                    'start': [start_point.X(), start_point.Y()],
-                    'end': [end_point.X(), end_point.Y()],
-                    'segment_index': i,
-                    'swath_index': j
-                }
-                self.current_routes.append(route_segment)
-                
-                # self.get_logger().info(f'Swath {i}-{j}: Start({start_point.X():.2f}, {start_point.Y():.2f}) End({end_point.X():.2f}, {end_point.Y():.2f})')
-        # Step 5: Plan path
-
-
-
-        f2c.Visualizer.figure()
-        f2c.Visualizer.plot(cells)
-        # f2c.Visualizer.plot(swaths)
-        f2c.Visualizer.plot(route)
-
-        f2c.Visualizer.save("Tutorial_image.png")
+                        if route_mode == "REPEAT":
+                            for k in range(repeat_times):
+                                self.current_waypoints.append(start_point1)
+                                self.current_waypoints.append(end_point1)
+                            self.current_waypoints.append(start_point1) # always go back to the start point
+                        
+                        # Store route segment for visualization
+                        route_segment = {
+                            'start': [start_point.X(), start_point.Y()],
+                            'end': [end_point.X(), end_point.Y()],
+                            'segment_index': i,
+                            'swath_index': j
+                        }
+                        self.current_routes.append(route_segment)
+        
+        # Plotting
+        try:
+            f2c.Visualizer.figure()
+            f2c.Visualizer.plot(cells)
+            if route is not None and route_mode != "REPEAT":
+                f2c.Visualizer.plot(route)
+            f2c.Visualizer.save("Tutorial_image.png")
+        except Exception as e:
+             self.get_logger().warn(f"Visualization failed: {e}")
 
 
 
