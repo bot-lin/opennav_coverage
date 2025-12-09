@@ -835,8 +835,11 @@ class CoverageNavigatorTester(Node):
         for waypoint in waypoints:
             actions = []
             precise_xy = default_precise_xy
+            bt_file = 'nav_not_the_first_wp'
             if index == 0:
                 precise_xy = 0.12
+                bt_file = 'nav'
+                
             if index == len(waypoints) - 1:
                 actions.append({
                     'name': 'plc_task_2',
@@ -867,6 +870,7 @@ class CoverageNavigatorTester(Node):
                 'is_reverse': False,
                 'inflation_radius': inflation_radius,
                 'uid': f'wp_{index}',
+                'bt': bt_file
             }
             ros_data['wps'].append(wp)
             ros_data['stop_on_failure'] = False
