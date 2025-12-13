@@ -37,7 +37,7 @@ import cv2
 import numpy as np
 import fields2cover as f2c
 from shapely.geometry import Polygon as ShapelyPolygon, LinearRing
-from shapely.validation import make_valid
+from shapely.validation import make_valid, explain_validity
 from geometry_msgs.msg import Point32
 # from opennav_coverage_demo.robot_nagivator import BasicNavigator
 # 配置日志记录
@@ -930,7 +930,11 @@ class CoverageNavigatorTester(Node):
             
             # Fix invalid geometry (buffer(0) trick or make_valid)
             if not poly.is_valid:
-                self.get_logger().warn(f"Outer polygon is invalid: {poly.is_valid.reason if hasattr(poly, 'is_valid') else 'unknown'}. Fixing...")
+                try:
+                    reason = explain_validity(poly)
+                except Exception:
+                    reason = "unknown"
+                self.get_logger().warn(f"Outer polygon is invalid: {reason}. Fixing...")
                 poly = make_valid(poly)
                 # If result is MultiPolygon, take the largest one
                 if poly.geom_type == 'MultiPolygon':
@@ -943,6 +947,9 @@ class CoverageNavigatorTester(Node):
                     else:
                         self.get_logger().error("Failed to fix polygon: No polygon found in fixed geometry")
                         return f2c.Cells()
+                # Sometimes make_valid returns a non-polygonal geometry; last-resort try buffer(0)
+                if hasattr(poly, "is_valid") and hasattr(poly, "geom_type") and poly.geom_type == "Polygon" and (not poly.is_valid):
+                    poly = poly.buffer(0)
             
             # 2. Process obstacles (holes)
             valid_holes = []
@@ -958,6 +965,11 @@ class CoverageNavigatorTester(Node):
                 hole_poly = ShapelyPolygon(hole_coords)
                 
                 if not hole_poly.is_valid:
+                    try:
+                        reason = explain_validity(hole_poly)
+                    except Exception:
+                        reason = "unknown"
+                    self.get_logger().warn(f"Obstacle ring is invalid: {reason}. Fixing...")
                     hole_poly = make_valid(hole_poly)
                     if hole_poly.geom_type == 'MultiPolygon':
                         # If obstacle splits, add all parts
