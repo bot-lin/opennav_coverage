@@ -49,8 +49,10 @@ class CoverageNavigatorTester(Node):
     def __init__(self):
         super().__init__(node_name='coverage_navigator_tester')
         self.current_costmap = None  # Initialize costmap storage
+        self.current_map = None  # Store static map (/get_map) response
         self.current_routes = []  # Store coverage routes for visualization   
         self.current_polygon = None  # Store current field polygon for visualization
+        self.current_edge_waypoints = []  # Store edge (contour) path for vacuum robot
     
     def call_clear_costmap_service(self):
         try:
@@ -89,6 +91,64 @@ class CoverageNavigatorTester(Node):
         except Exception as e:
             self.get_logger().error(f'Error calling service: {str(e)}')
             return False
+
+    def call_get_map_service(self):
+        """Fetch the static occupancy grid map from HTTP server (/get_map)."""
+        try:
+            url = "http://127.0.0.1:1234/get_map"
+            self.get_logger().info('Calling GetMap service...')
+            res = requests.get(url)
+            if res.status_code == 200:
+                data = res.json()
+                self.current_map = data
+                self.get_logger().info('GetMap service call succeeded.')
+                return True
+            else:
+                self.get_logger().error(f'GetMap service call failed with status code: {res.status_code}')
+                return False
+        except Exception as e:
+            self.get_logger().error(f'Error calling GetMap service: {str(e)}')
+            return False
+
+    def _extract_grid(self, grid_msg):
+        """
+        Extract 2D grid + metadata from either:
+        - /get_global_costmap style: {'data': [...], 'metadata': {'size_x','size_y','resolution','origin':...}}
+        - /get_map style: {'data': {'data':[...], 'info': {'width','height','resolution','origin':...}}}
+        Returns: (grid_2d, width, height, resolution, origin_x, origin_y)
+        """
+        # Unwrap HTTP wrapper if present
+        actual = grid_msg
+        if isinstance(actual, dict) and 'code' in actual and 'data' in actual:
+            if actual.get('code', 1) != 0:
+                raise ValueError(f"HTTP wrapper error code: {actual.get('code')}")
+            actual = actual['data']
+
+        # Costmap format
+        if isinstance(actual, dict) and 'metadata' in actual and 'data' in actual:
+            meta = actual['metadata']
+            width = meta['size_x']
+            height = meta['size_y']
+            resolution = meta['resolution']
+            origin_x = meta['origin']['position']['x']
+            origin_y = meta['origin']['position']['y']
+            raw = actual['data']
+            data_1d = np.array(raw, dtype=np.int16).reshape((height, width))
+            return data_1d, width, height, resolution, origin_x, origin_y
+
+        # Map format
+        if isinstance(actual, dict) and 'info' in actual and 'data' in actual:
+            info = actual['info']
+            width = info['width']
+            height = info['height']
+            resolution = info['resolution']
+            origin_x = info['origin']['position']['x']
+            origin_y = info['origin']['position']['y']
+            raw = actual['data']
+            data_1d = np.array(raw, dtype=np.int16).reshape((height, width))
+            return data_1d, width, height, resolution, origin_x, origin_y
+
+        raise ValueError("Unknown grid message format for map/costmap")
 
     def pixel_to_world(self, pixel_x, pixel_y, resolution, origin_x, origin_y):
         """
@@ -632,52 +692,25 @@ class CoverageNavigatorTester(Node):
             - obstacles_polygons: List of obstacle polygons, each as a list of [x, y] coordinates
         """
         try:
-            if not hasattr(self, 'current_costmap') or not self.current_costmap:
-                self.get_logger().error('No costmap available. Call get costmap service first.')
+            # Prefer static map if available, otherwise fall back to costmap
+            grid_source = None
+            if hasattr(self, 'current_map') and self.current_map:
+                grid_source = self.current_map
+                self.get_logger().info('Using /get_map data for free-space extraction')
+            elif hasattr(self, 'current_costmap') and self.current_costmap:
+                grid_source = self.current_costmap
+                self.get_logger().info('Using /get_global_costmap data for free-space extraction')
+            else:
+                self.get_logger().error('No map/costmap available. Call get_map or get_costmap service first.')
                 return None, []
             
             if not user_polygon or len(user_polygon) < 3:
                 self.get_logger().error('Invalid user polygon provided')
                 return None, []
             
-            costmap_msg = self.current_costmap
-            self.get_logger().info(f'Cropping costmap to user polygon: {user_polygon}')
-            
-            # Handle HTTP service wrapper format
-            actual_costmap_data = costmap_msg
-            if 'code' in costmap_msg and 'data' in costmap_msg:
-                if costmap_msg['code'] == 0:
-                    actual_costmap_data = costmap_msg['data']
-                else:
-                    self.get_logger().error(f"Costmap data has error code: {costmap_msg['code']}")
-                    return None, []
-            
-            # Extract costmap data
-            costmap_data = actual_costmap_data['data']
-            # Handle different data formats (similar to process_costmap)
-            if isinstance(costmap_data, list) and len(costmap_data) > 0:
-                if isinstance(costmap_data[0], dict):
-                    # Try to extract from dict format
-                    for key in ['value', 'cost', 'data', 'cell_value']:
-                        if key in costmap_data[0]:
-                            try:
-                                data = np.array([cell[key] for cell in costmap_data], dtype=np.uint8)
-                                break
-                            except Exception:
-                                continue
-                    else:
-                        self.get_logger().error("Could not extract numerical data from dict format")
-                        return None, []
-                else:
-                    data = np.array(costmap_data, dtype=np.uint8)
-            else:
-                self.get_logger().error(f"Unexpected costmap data format: {type(costmap_data)}")
-                return None, []
-            
-            data = data.reshape((actual_costmap_data['metadata']['size_y'], actual_costmap_data['metadata']['size_x']))
-            resolution = actual_costmap_data['metadata']['resolution']
-            origin_x = actual_costmap_data['metadata']['origin']['position']['x']
-            origin_y = actual_costmap_data['metadata']['origin']['position']['y']
+            self.get_logger().info(f'Cropping grid to user polygon: {user_polygon}')
+
+            data, width, height, resolution, origin_x, origin_y = self._extract_grid(grid_source)
 
             self.get_logger().info(f'Costmap resolution: {resolution} m/cell, origin: ({origin_x}, {origin_y})')
             
@@ -687,20 +720,27 @@ class CoverageNavigatorTester(Node):
                 pixel_x = int((point[0] - origin_x) / resolution)
                 pixel_y = int((point[1] - origin_y) / resolution)
                 # Clamp to valid pixel range
-                pixel_x = max(0, min(pixel_x, actual_costmap_data['metadata']['size_x'] - 1))
-                pixel_y = max(0, min(pixel_y, actual_costmap_data['metadata']['size_y'] - 1))
+                pixel_x = max(0, min(pixel_x, width - 1))
+                pixel_y = max(0, min(pixel_y, height - 1))
                 user_polygon_pixels.append([pixel_x, pixel_y])
             
             self.get_logger().info(f'User polygon in pixels: {user_polygon_pixels}')
             
             # Create a mask for the user polygon
-            mask = np.zeros((actual_costmap_data['metadata']['size_y'], actual_costmap_data['metadata']['size_x']), dtype=np.uint8)
+            mask = np.zeros((height, width), dtype=np.uint8)
             polygon_contour = np.array(user_polygon_pixels, dtype=np.int32)
             cv2.fillPoly(mask, [polygon_contour], 255)
             
-            # Create binary image of free space (cost <= 50)
-            free_space_binary = np.zeros_like(data, dtype=np.uint8)
-            free_space_binary[data <= 50] = 255
+            # Create binary image of free space
+            # For map: free=0, occupied=100, unknown=-1
+            # For costmap: free=0, occupied=255 (and intermediate costs)
+            free_space_binary = np.zeros((height, width), dtype=np.uint8)
+            if np.min(data) < 0:
+                # occupancy grid map: treat unknown as non-free
+                free_space_binary[data == 0] = 255
+            else:
+                # costmap: treat low cost as free
+                free_space_binary[data <= 50] = 255
             
             # Apply user polygon mask to only consider areas within the polygon
             cropped_free_space = cv2.bitwise_and(free_space_binary, mask)
@@ -754,8 +794,12 @@ class CoverageNavigatorTester(Node):
             self.get_logger().info(f'Free space polygon: {world_polygon[:5]}...')  # First 5 points
             
             # Detect obstacles within the cropped area
-            obstacle_binary = np.zeros_like(data, dtype=np.uint8)
-            obstacle_binary[data >= 200] = 255  # High cost areas are obstacles
+            obstacle_binary = np.zeros((height, width), dtype=np.uint8)
+            if np.min(data) < 0:
+                # occupancy grid: treat occupied (>=50) as obstacles, unknown as obstacles too (safer)
+                obstacle_binary[(data >= 50) | (data < 0)] = 255
+            else:
+                obstacle_binary[data >= 200] = 255  # costmap high costs are obstacles
             
             # Apply user polygon mask to only consider obstacles within the polygon
             cropped_obstacles = cv2.bitwise_and(obstacle_binary, mask)
@@ -1360,7 +1404,15 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     self.get_logger().info(f"Using user-provided field: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
                 else:
                     # Get the largest free space from costmap analysis
-                    if self.call_get_costmap_service():
+                    # Prefer map for polygon extraction unless explicitly requested
+                    polygon_source = data.get('polygon_source', 'map')  # 'map' or 'costmap'
+                    got_grid = False
+                    if polygon_source == 'costmap':
+                        got_grid = self.call_get_costmap_service()
+                    else:
+                        got_grid = self.call_get_map_service()
+
+                    if got_grid:
                         field, obstacles = self.crop_and_find_free_space(user_field)
                         if field:
                             avoid_obstacles = data.get('avoid_obstacles', False)
