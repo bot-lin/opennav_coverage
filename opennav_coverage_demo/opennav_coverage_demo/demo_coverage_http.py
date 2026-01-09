@@ -679,6 +679,60 @@ class CoverageNavigatorTester(Node):
             area -= coords[j][0] * coords[i][1]
         return abs(area) / 2.0
 
+    def visualize_edge_waypoints(self, edge_waypoints, filename_prefix="edge_waypoints"):
+        """Visualize edge waypoints (contour path) for debugging."""
+        try:
+            if not edge_waypoints or len(edge_waypoints) < 2:
+                self.get_logger().warn("Not enough edge waypoints to visualize")
+                return
+
+            coords = np.array(edge_waypoints, dtype=float)
+            min_x, min_y = coords.min(axis=0)
+            max_x, max_y = coords.max(axis=0)
+            padding = max(max_x - min_x, max_y - min_y) * 0.1 if max(max_x - min_x, max_y - min_y) > 0 else 1.0
+
+            width_m = max_x - min_x + 2 * padding
+            height_m = max_y - min_y + 2 * padding
+            scale = min(900 / width_m, 700 / height_m)
+
+            img_width = max(200, int(width_m * scale))
+            img_height = max(200, int(height_m * scale))
+
+            image = np.ones((img_height, img_width, 3), dtype=np.uint8) * 255
+
+            def world_to_image(x, y):
+                img_x = int((x - (min_x - padding)) * scale)
+                img_y = int((max_y + padding - y) * scale)
+                return img_x, img_y
+
+            pts = []
+            for p in edge_waypoints:
+                ix, iy = world_to_image(p[0], p[1])
+                pts.append([ix, iy])
+
+            pts_np = np.array(pts, dtype=np.int32)
+
+            # Draw polyline
+            cv2.polylines(image, [pts_np], False, (255, 0, 0), 2)  # Blue line
+
+            # Draw points and labels (limit to avoid clutter)
+            label_every = max(1, len(edge_waypoints) // 20)
+            for idx, (ix, iy) in enumerate(pts):
+                cv2.circle(image, (ix, iy), 3, (0, 0, 255), -1)  # Red dot
+                if idx % label_every == 0:
+                    cv2.putText(image, str(idx), (ix + 4, iy - 4),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 0, 0), 1)
+
+            title = f"Edge waypoints: {len(edge_waypoints)} points"
+            cv2.putText(image, title, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+
+            filename = f"{filename_prefix}.png"
+            cv2.imwrite(filename, image)
+            self.get_logger().info(f"Saved edge waypoint visualization: {filename}")
+
+        except Exception as e:
+            self.get_logger().error(f"Error visualizing edge waypoints: {str(e)}")
+
     def crop_and_find_free_space(self, user_polygon):
         """
         Crop the global costmap to the user's polygon and find the largest free space within it.
@@ -861,8 +915,11 @@ class CoverageNavigatorTester(Node):
                         task_name="default_task",
                         map_id=0,
                         plc_task_on_cancel=0,
-                        plc_task_on_fail=0):
+                        plc_task_on_fail=0,
+                        description_override=None):
         flask_ros_url = 'http://127.0.0.1:1233'
+        if description_override is None:
+            description_override = {"polygon": self.current_polygon, "path": self.current_routes, "op_width": getattr(self, 'current_robot_op_width', None)}
         ros_data = {
             "wps": [],
             "map_id": map_id,
@@ -873,7 +930,7 @@ class CoverageNavigatorTester(Node):
             "repeat_times": 0,
             "plc_task_on_cancel": plc_task_on_cancel,
             "plc_task_on_fail": plc_task_on_fail,
-            "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes, "op_width": self.current_robot_op_width})
+            "description": json.dumps(description_override)
             }
         index = 0
         for waypoint in waypoints:
@@ -1219,6 +1276,7 @@ class CoverageNavigatorTester(Node):
                 self.current_edge_waypoints.append([pt.X(), pt.Y()])
         
         self.get_logger().info(f'Generated edge path with {len(self.current_edge_waypoints)} points')
+        self.visualize_edge_waypoints(self.current_edge_waypoints, "current_edge_waypoints")
 
         self.current_waypoints = []
         self.current_routes = []  # Reset routes for new coverage generation
@@ -1566,6 +1624,34 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     "code": 1,
                     "error": "没有可用的导航路径，请先调用 /navigate_coverage 接口"
                 }), 400
+
+            # 1) Create edge-following task (贴边) if available
+            edge_task_id = None
+            if hasattr(self, 'current_edge_waypoints') and self.current_edge_waypoints:
+                edge_wps = [Point32(x=p[0], y=p[1], z=0.0) for p in self.current_edge_waypoints]
+                edge_desc = {
+                    "polygon": self.current_polygon,
+                    "edge_path": self.current_edge_waypoints,
+                    "op_width": getattr(self, 'current_robot_op_width', None),
+                }
+                ok_edge, edge_res = self.sendTaskRequest(
+                    edge_wps,
+                    path_planner=path_planner,
+                    default_precise_xy=precise_xy,
+                    inflation_radius=inflation_radius,
+                    task_name=f"{task_name}贴边",
+                    map_id=map_id,
+                    plc_task_on_cancel=data.get('plc_task_on_cancel', 2),
+                    plc_task_on_fail=data.get('plc_task_on_fail', 2),
+                    description_override=edge_desc
+                )
+                if not ok_edge:
+                    return jsonify({
+                        "code": 1,
+                        "error": f"贴边任务生成失败: {edge_res}"
+                    }), 500
+                edge_task_id = edge_res
+
             result, task_id = self.sendTaskRequest(
                 self.current_waypoints, 
                 path_planner=path_planner, 
@@ -1585,7 +1671,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             return jsonify({
                 "code": 0,
                 "status": "任务生成成功",
-                "task_id": task_id
+                "task_id": task_id,
+                "edge_task_id": edge_task_id
             }), 200
 
         @self.app.route('/save_config', methods=['POST'])
