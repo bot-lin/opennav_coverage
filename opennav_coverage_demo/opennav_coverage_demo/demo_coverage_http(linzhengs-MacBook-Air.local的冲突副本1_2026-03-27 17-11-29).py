@@ -1,0 +1,1865 @@
+#! /usr/bin/env python3
+# Copyright 2023 Open Navigation LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+from enum import Enum
+import time
+import threading
+import json
+import logging
+import os
+import requests
+import yaml
+from flask import Flask, request, jsonify, Response
+
+from action_msgs.msg import GoalStatus
+from geometry_msgs.msg import Point32, Polygon
+from lifecycle_msgs.srv import GetState
+import rclpy
+from rclpy.duration import Duration
+from rclpy.node import Node
+from rcl_interfaces.msg import Parameter
+from rcl_interfaces.srv import SetParametersAtomically
+import math
+
+import cv2
+import numpy as np
+import fields2cover as f2c
+from shapely.geometry import Polygon as ShapelyPolygon, LinearRing
+from shapely.validation import make_valid
+from geometry_msgs.msg import Point32
+import xml.etree.ElementTree as ET
+import re
+# from opennav_coverage_demo.robot_nagivator import BasicNavigator
+# 配置日志记录
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+class CoverageNavigatorTester(Node):
+    # 这里保留您现有的CoverageNavigatorTester类的代码
+    def __init__(self):
+        super().__init__(node_name='coverage_navigator_tester')
+        self.current_costmap = None  # Initialize costmap storage
+        self.current_routes = []  # Store coverage routes for visualization   
+        self.current_polygon = None  # Store current field polygon for visualization
+
+    
+    def call_clear_costmap_service(self):
+        try:
+            url = "http://127.0.0.1:1234/clear_global_costmap"
+            self.get_logger().info('Calling ClearGlobalCostmap service...')
+            res = requests.get(url)
+            if res.status_code == 200:
+                self.get_logger().info('ClearGlobalCostmap service call succeeded.')
+                return True
+            else:
+                self.get_logger().error(f'ClearGlobalCostmap service call failed with status code: {res.status_code}')
+                return False
+        except Exception as e:
+            self.get_logger().error(f'Error calling service: {str(e)}')
+            return False
+    def call_get_costmap_service(self):
+        self.call_clear_costmap_service()  # Clear costmaps before fetching new data
+        time.sleep(1)  # Wait a moment to ensure costmaps are cleared
+        try:
+            url = "http://127.0.0.1:1234/get_global_costmap"
+            self.get_logger().info('Calling GetCostmap service...')
+            res = requests.get(url)
+            if res.status_code == 200:
+                self.get_logger().info('GetCostmap service call succeeded.')
+                data = res.json()
+                # Store the full response for processing
+                self.current_costmap = data
+                
+                # Save the costmap as an image immediately after obtaining it
+                                
+                return True
+            else:
+                self.get_logger().error(f'GetCostmap service call failed with status code: {res.status_code}')
+                return False
+                  
+        except Exception as e:
+            self.get_logger().error(f'Error calling service: {str(e)}')
+            return False
+
+    def pixel_to_world(self, pixel_x, pixel_y, resolution, origin_x, origin_y):
+        """
+        Convert pixel coordinates to world coordinates
+        
+        Args:
+            pixel_x: Column in image (x-axis in image coordinates)
+            pixel_y: Row in image (y-axis in image coordinates)
+            resolution: Meters per pixel
+            origin_x: World X coordinate of pixel (0,0)
+            origin_y: World Y coordinate of pixel (0,0)
+            
+        Returns:
+            (world_x, world_y): World coordinates in meters
+        """
+        world_x = origin_x + (pixel_x * resolution)
+        world_y = origin_y + (pixel_y * resolution)
+        return world_x, world_y
+
+    def convert_contour_to_world(self, contour, resolution, origin_x, origin_y):
+        """
+        Convert a single contour from pixel coordinates to world coordinates
+        
+        Args:
+            contour: OpenCV contour in pixel coordinates
+            resolution: Meters per pixel
+            origin_x, origin_y: World coordinates of pixel (0,0)
+            
+        Returns:
+            world_contour: List of (x, y) tuples in world coordinates
+        """
+        world_contour = []
+        for point in contour:
+            pixel_x, pixel_y = point[0][0], point[0][1]  # OpenCV contour format
+            world_x, world_y = self.pixel_to_world(pixel_x, pixel_y, resolution, origin_x, origin_y)
+            world_contour.append([world_x, world_y])
+        return world_contour
+
+
+
+    def process_costmap(self, msg):
+        free_contours_world = []  # Initialize at the start
+        try:
+            # Debug: Print the structure of the received message
+            self.get_logger().info(f"Costmap message type: {type(msg)}")
+            self.get_logger().info(f"Costmap keys: {list(msg.keys()) if isinstance(msg, dict) else 'Not a dict'}")
+            
+            # Handle different response formats from the HTTP service
+            # The service may return {'code': 0, 'data': actual_costmap_data}
+            actual_costmap_data = msg
+            if 'code' in msg and 'data' in msg:
+                # HTTP service wrapper format
+                if msg['code'] == 0:
+                    actual_costmap_data = msg['data']
+                    self.get_logger().info("Using costmap data from HTTP service wrapper")
+                else:
+                    self.get_logger().error(f"HTTP service returned error code: {msg['code']}")
+                    return []
+            
+            # Check if data is in the expected format
+            if 'data' not in actual_costmap_data or 'metadata' not in actual_costmap_data:
+                self.get_logger().error("Invalid costmap message format - missing 'data' or 'metadata' keys")
+                self.get_logger().error(f"Available keys in costmap data: {list(actual_costmap_data.keys())}")
+                return []
+            
+            # Use the actual costmap data for processing
+            msg = actual_costmap_data
+            
+            costmap_data = msg['data']
+            self.get_logger().info(f"Data type: {type(costmap_data)}, length: {len(costmap_data) if hasattr(costmap_data, '__len__') else 'Unknown'}")
+            
+            # Log first few elements for debugging
+            if hasattr(costmap_data, '__len__') and len(costmap_data) > 0:
+                sample_size = min(3, len(costmap_data))
+                self.get_logger().info(f"First {sample_size} data elements: {costmap_data[:sample_size]}")
+            
+            # Handle different data formats
+            if isinstance(costmap_data, list):
+                # If data is a list of numbers
+                try:
+                    data = np.array(costmap_data, dtype=np.uint8)
+                except (ValueError, TypeError) as e:
+                    self.get_logger().error(f"Cannot convert costmap data to numpy array: {e}")
+                    # Try to extract numerical values if data contains dicts
+                    if len(costmap_data) > 0 and isinstance(costmap_data[0], dict):
+                        self.get_logger().info("Data appears to be list of dicts, attempting to extract values...")
+                        # Try common keys like 'value', 'cost', 'data'
+                        for key in ['value', 'cost', 'data', 'cell_value']:
+                            if key in costmap_data[0]:
+                                try:
+                                    data = np.array([cell[key] for cell in costmap_data], dtype=np.uint8)
+                                    self.get_logger().info(f"Successfully extracted data using key '{key}'")
+                                    break
+                                except Exception:
+                                    continue
+                        else:
+                            self.get_logger().error("Could not extract numerical data from dict format")
+                            return []
+                    else:
+                        return []
+            else:
+                self.get_logger().error(f"Unexpected data type: {type(costmap_data)}")
+                return []
+            
+            # Reshape the data
+            try:
+                data = data.reshape((msg['metadata']['size_y'], msg['metadata']['size_x']))
+            except ValueError as e:
+                self.get_logger().error(f"Cannot reshape data: {e}")
+                self.get_logger().error(f"Data shape: {data.shape}, Expected: ({msg['metadata']['size_y']}, {msg['metadata']['size_x']})")
+                return []
+            
+            # Extract metadata for coordinate conversion
+            resolution = msg['metadata']['resolution']
+            origin_x = msg['metadata']['origin']['position']['x']
+            origin_y = msg['metadata']['origin']['position']['y']
+
+            self.get_logger().info(f'Costmap size: {msg["metadata"]["size_x"]} x {msg["metadata"]["size_y"]}')
+            self.get_logger().info(f'Costmap resolution: {resolution} m/cell')
+            self.get_logger().info(f'Costmap origin: ({origin_x}, {origin_y}) meters')
+
+            # Create a uint8 image for visualization
+            # Costmap values: 0 (free) -> 255 (occupied), so we need to invert for visualization
+            image = np.zeros_like(data, dtype=np.uint8)
+            
+            # For costmap: 0 = free, 255 = occupied
+            # For visualization: 0 = black (occupied), 255 = white (free)
+            image = 255 - data  # Invert the costmap for better visualization
+            
+            # Alternative: Create a more detailed mapping if needed
+            # image = np.zeros_like(data, dtype=np.uint8)
+            # image[data == 0] = 255      # Free space -> white
+            # image[data == 255] = 0      # Occupied -> black
+            # image[(data > 0) & (data < 255)] = 255 - data[(data > 0) & (data < 255)]  # Interpolate
+
+            # Save original costmap
+            filename = 'global_costmap.png'
+            cv2.imwrite(filename, image)
+            self.get_logger().info(f'Saved costmap to {filename}')
+
+            # Create better binary images for polygon detection
+            # For costmap data (0-255), we need different thresholds
+            
+            # Free space: cells with low cost (0-50)
+            free_space_binary = np.zeros_like(data, dtype=np.uint8)
+            free_space_binary[data <= 50] = 255
+            
+            # Navigable space: cells with cost <= 100
+            navigable_binary = np.zeros_like(data, dtype=np.uint8)
+            navigable_binary[data <= 100] = 255
+            
+            # Obstacle boundaries: cells with cost >= 200
+            obstacle_binary = np.zeros_like(data, dtype=np.uint8)
+            obstacle_binary[data >= 200] = 255
+            
+            # Occupied space: cells with cost >= 250 (nearly occupied)
+            occupied_binary = np.zeros_like(data, dtype=np.uint8)
+            occupied_binary[data >= 250] = 255
+            
+            # Apply morphological operations to clean up the binary images
+            kernel = np.ones((3,3), np.uint8)
+            free_space_binary = cv2.morphologyEx(free_space_binary, cv2.MORPH_CLOSE, kernel)
+            navigable_binary = cv2.morphologyEx(navigable_binary, cv2.MORPH_CLOSE, kernel)
+            obstacle_binary = cv2.morphologyEx(obstacle_binary, cv2.MORPH_CLOSE, kernel)
+            occupied_binary = cv2.morphologyEx(occupied_binary, cv2.MORPH_CLOSE, kernel)
+            
+            # Create a colored image for polygon visualization
+            polygon_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            
+            # Find and draw contours with different parameters for better fitting
+            
+            # 1. Free space polygons (low cost areas) with index labels
+            free_contours, _ = cv2.findContours(free_space_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Convert free contours to world coordinates
+            free_contours_world = []
+            free_contour_index = 0
+            
+            for contour in free_contours:
+                if cv2.contourArea(contour) > 700:  # Reduced threshold
+                    # Convert contour to world coordinates
+                    world_contour = self.convert_contour_to_world(contour, resolution, origin_x, origin_y)
+                    free_contours_world.append({
+                        'index': free_contour_index,
+                        'area_pixels': cv2.contourArea(contour),
+                        'area_meters_squared': cv2.contourArea(contour) * (resolution ** 2),
+                        'pixel_coordinates': contour.tolist(),
+                        'world_coordinates': world_contour
+                    })
+                    
+                    # Use more precise approximation for visualization
+                    epsilon = 0.005 * cv2.arcLength(contour, True)  # Much more precise
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    cv2.drawContours(polygon_image, [approx], -1, (0, 255, 0), 1)  # Green, thinner line
+                    
+                    # Calculate centroid for text placement
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        
+                        # Convert centroid to world coordinates
+                        world_cx, world_cy = self.pixel_to_world(cx, cy, resolution, origin_x, origin_y)
+                        
+                        # Draw index number at centroid
+                        cv2.putText(polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)  # White text with border
+                        cv2.putText(polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 1)  # Black text
+                        
+                        # Log information about this contour
+                        self.get_logger().info(f'Free contour {free_contour_index}: '
+                                             f'Area={cv2.contourArea(contour):.1f} pixels '
+                                             f'({cv2.contourArea(contour) * (resolution ** 2):.2f} m²), '
+                                             f'Centroid=({world_cx:.2f}, {world_cy:.2f}) m')
+                        
+                        free_contour_index += 1
+            
+            # Save free contours as JSON file with world coordinates
+            with open('free_contours_world_coordinates.json', 'w') as f:
+                json.dump(free_contours_world, f, indent=2)
+            self.get_logger().info(f'Saved {len(free_contours_world)} free contours with world coordinates to free_contours_world_coordinates.json')
+            
+            # 2. Navigable space polygons (broader navigable area)
+            navigable_contours, _ = cv2.findContours(navigable_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in navigable_contours:
+                if cv2.contourArea(contour) > 100:
+                    epsilon = 0.008 * cv2.arcLength(contour, True)
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    cv2.drawContours(polygon_image, [approx], -1, (0, 255, 255), 1)  # Yellow
+            
+            # 3. Obstacle boundaries
+            obstacle_contours, _ = cv2.findContours(obstacle_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in obstacle_contours:
+                if cv2.contourArea(contour) > 25:  # Even smaller threshold for obstacles
+                    epsilon = 0.005 * cv2.arcLength(contour, True)
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    cv2.drawContours(polygon_image, [approx], -1, (0, 0, 255), 1)  # Red
+            
+            # 4. Occupied space polygons (high cost areas)
+            occupied_contours, _ = cv2.findContours(occupied_binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            for contour in occupied_contours:
+                if cv2.contourArea(contour) > 10:  # Very small threshold for precise obstacles
+                    epsilon = 0.003 * cv2.arcLength(contour, True)  # Most precise
+                    approx = cv2.approxPolyDP(contour, epsilon, True)
+                    cv2.drawContours(polygon_image, [approx], -1, (255, 0, 0), 2)  # Blue, thicker line
+            
+            # Save polygon image
+            polygon_filename = 'global_costmap_polygons.png'
+            cv2.imwrite(polygon_filename, polygon_image)
+            self.get_logger().info(f'Saved polygon visualization to {polygon_filename}')
+            
+            # Create a detailed version with just the most important polygons and indexed free contours
+            detailed_polygon_image = np.ones_like(polygon_image) * 255  # White background
+            
+            # Draw only the most precise contours with indices
+            free_contour_index = 0
+            for contour in free_contours:
+                if cv2.contourArea(contour) > 700:
+                    # Use the original contour points for maximum precision
+                    cv2.drawContours(detailed_polygon_image, [contour], -1, (0, 200, 0), 2)
+                    
+                    # Calculate centroid for text placement
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        
+                        # Draw index number at centroid (larger font for white background)
+                        cv2.putText(detailed_polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 0, 0), 3)  # Red text with thick border
+                        cv2.putText(detailed_polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 0, 0), 2)  # Black text
+                        
+                        free_contour_index += 1
+            
+            for contour in occupied_contours:
+                if cv2.contourArea(contour) > 25:
+                    cv2.drawContours(detailed_polygon_image, [contour], -1, (0, 0, 200), 1)
+            
+            detailed_filename = 'global_costmap_detailed_polygons.png'
+            cv2.imwrite(detailed_filename, detailed_polygon_image)
+            self.get_logger().info(f'Saved detailed polygon visualization to {detailed_filename}')
+            
+            # Create a version with original contours (no approximation) with indices
+            precise_polygon_image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
+            
+            # Draw exact contours without approximation
+            cv2.drawContours(precise_polygon_image, free_contours, -1, (0, 255, 0), 1)
+            cv2.drawContours(precise_polygon_image, occupied_contours, -1, (0, 0, 255), 1)
+            
+            # Add indices to free contours
+            free_contour_index = 0
+            for contour in free_contours:
+                if cv2.contourArea(contour) > 50:
+                    # Calculate centroid for text placement
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        
+                        # Draw index number at centroid
+                        cv2.putText(precise_polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)  # White text with border
+                        cv2.putText(precise_polygon_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 1)  # Black text
+                        
+                        free_contour_index += 1
+            
+            precise_filename = 'global_costmap_precise_contours.png'
+            cv2.imwrite(precise_filename, precise_polygon_image)
+            self.get_logger().info(f'Saved precise contour visualization to {precise_filename}')
+            
+            # Create a special version with ONLY indexed free contours for clarity
+            indexed_free_image = np.ones_like(polygon_image) * 255  # White background
+            
+            free_contour_index = 0
+            for contour in free_contours:
+                if cv2.contourArea(contour) > 50:
+                    # Draw contour in green
+                    cv2.drawContours(indexed_free_image, [contour], -1, (0, 180, 0), 2)
+                    
+                    # Calculate centroid for text placement
+                    M = cv2.moments(contour)
+                    if M["m00"] != 0:
+                        cx = int(M["m10"] / M["m00"])
+                        cy = int(M["m01"] / M["m00"])
+                        
+                        # Draw index number at centroid (large, clear text)
+                        cv2.putText(indexed_free_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1.5, (0, 0, 255), 4)  # Red text with thick border
+                        cv2.putText(indexed_free_image, str(free_contour_index), (cx, cy), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 1.5, (255, 255, 255), 2)  # White text
+                        
+                        free_contour_index += 1
+            
+            indexed_filename = 'global_costmap_indexed_free_contours.png'
+            cv2.imwrite(indexed_filename, indexed_free_image)
+            self.get_logger().info(f'Saved indexed free contours to {indexed_filename}')
+            
+            # Log detailed statistics
+            self.get_logger().info(f'Found {len(free_contours)} free space regions')
+            self.get_logger().info(f'Found {len(navigable_contours)} navigable regions')
+            self.get_logger().info(f'Found {len(obstacle_contours)} obstacle boundary regions')
+            self.get_logger().info(f'Found {len(occupied_contours)} occupied regions')
+            
+            # Log unique costmap values for debugging
+            unique_values = np.unique(data)
+            self.get_logger().info(f'Unique costmap values: {unique_values}')
+            
+            return free_contours_world
+            
+        except Exception as e:
+            self.get_logger().error(f'Error processing costmap: {str(e)}')
+            return []
+
+    def visualize_field_polygon(self, field_coords, filename_prefix="selected_field", obstacles_polygons=None, coverage_routes=None):
+        """
+        Visualize the field polygon, obstacles, and coverage routes for debugging purposes.
+        
+        Args:
+            field_coords: List of [x, y] coordinates defining the field boundary
+            filename_prefix: Prefix for the saved image file
+            obstacles_polygons: List of obstacle polygons, each as a list of [x, y] coordinates
+            coverage_routes: List of route segments with start/end coordinates
+        """
+        try:
+            if not field_coords or len(field_coords) < 3:
+                self.get_logger().warn("Invalid field coordinates for visualization")
+                return
+            
+            # Convert to numpy array for easier processing
+            coords = np.array(field_coords)
+            
+            # Calculate bounds with some padding
+            min_x, min_y = coords.min(axis=0)
+            max_x, max_y = coords.max(axis=0)
+            padding = max(max_x - min_x, max_y - min_y) * 0.1  # 10% padding
+            
+            # Create image dimensions (scale to reasonable pixel size)
+            width_m = max_x - min_x + 2 * padding
+            height_m = max_y - min_y + 2 * padding
+            scale = min(800 / width_m, 600 / height_m)  # Max 800x600 image
+            
+            img_width = int(width_m * scale)
+            img_height = int(height_m * scale)
+            
+            self.get_logger().info(f"Creating field visualization: {img_width}x{img_height} pixels, scale={scale:.2f} px/m")
+            
+            # Create white background image
+            image = np.ones((img_height, img_width, 3), dtype=np.uint8) * 255
+            
+            # Convert world coordinates to image coordinates
+            def world_to_image(x, y):
+                img_x = int((x - (min_x - padding)) * scale)
+                img_y = int((max_y + padding - y) * scale)  # Flip Y axis
+                return img_x, img_y
+            
+            # Convert field coordinates to image coordinates
+            image_coords = []
+            for coord in field_coords:
+                img_x, img_y = world_to_image(coord[0], coord[1])
+                image_coords.append([img_x, img_y])
+            
+            # Draw field polygon
+            image_coords = np.array(image_coords, dtype=np.int32)
+            cv2.fillPoly(image, [image_coords], (200, 255, 200))  # Light green fill
+            cv2.polylines(image, [image_coords], True, (0, 150, 0), 3)  # Dark green border
+            
+            # Draw obstacles if provided
+            if obstacles_polygons:
+                self.get_logger().info(f"Drawing {len(obstacles_polygons)} obstacles")
+                for i, obstacle in enumerate(obstacles_polygons):
+                    # Convert obstacle coordinates to image coordinates
+                    obstacle_image_coords = []
+                    for coord in obstacle:
+                        img_x, img_y = world_to_image(coord[0], coord[1])
+                        obstacle_image_coords.append([img_x, img_y])
+                    
+                    obstacle_coords = np.array(obstacle_image_coords, dtype=np.int32)
+                    if len(obstacle_coords) >= 3:  # Valid polygon
+                        cv2.fillPoly(image, [obstacle_coords], (100, 100, 100))  # Dark gray fill for obstacles
+                        cv2.polylines(image, [obstacle_coords], True, (50, 50, 50), 2)  # Darker gray border
+                        
+                        # Add obstacle index
+                        if len(obstacle_coords) > 0:
+                            center_x = int(np.mean(obstacle_coords[:, 0]))
+                            center_y = int(np.mean(obstacle_coords[:, 1]))
+                            cv2.putText(image, f"Obs{i}", (center_x - 10, center_y + 5), 
+                                       cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 1)
+            
+            # Add coordinate labels at vertices
+            for i, coord in enumerate(field_coords[:8]):  # Limit to first 8 points to avoid clutter
+                img_x, img_y = world_to_image(coord[0], coord[1])
+                # Draw point
+                cv2.circle(image, (img_x, img_y), 5, (255, 0, 0), -1)  # Red dot
+                # Add coordinate text
+                text = f"({coord[0]:.1f},{coord[1]:.1f})"
+                font_scale = 0.4
+                thickness = 1
+                text_size = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)[0]
+                # Position text to avoid overlap
+                text_x = img_x + 8 if img_x < img_width - text_size[0] - 8 else img_x - text_size[0] - 8
+                text_y = img_y - 8 if img_y > text_size[1] + 8 else img_y + text_size[1] + 8
+                # White background for text
+                cv2.rectangle(image, (text_x - 2, text_y - text_size[1] - 2), 
+                            (text_x + text_size[0] + 2, text_y + 2), (255, 255, 255), -1)
+                cv2.putText(image, text, (text_x, text_y), cv2.FONT_HERSHEY_SIMPLEX, 
+                           font_scale, (0, 0, 0), thickness)
+            
+            # Draw coverage routes if provided
+            route_count = 0
+            if coverage_routes:
+                self.get_logger().info(f"Drawing {len(coverage_routes)} coverage route segments")
+                route_count = len(coverage_routes)
+                
+                # Colors for different route segments
+                route_colors = [
+                    (0, 165, 255),    # Orange
+                    (147, 20, 255),   # Deep pink
+                    (255, 191, 0),    # Dark orange
+                    (0, 255, 127),    # Spring green
+                    (255, 20, 147),   # Deep pink
+                    (0, 191, 255),    # Deep sky blue
+                    (255, 105, 180),  # Hot pink
+                    (50, 205, 50)     # Lime green
+                ]
+                
+                for i, route in enumerate(coverage_routes):
+                    # Convert route coordinates to image coordinates
+                    start_img_x, start_img_y = world_to_image(route['start'][0], route['start'][1])
+                    end_img_x, end_img_y = world_to_image(route['end'][0], route['end'][1])
+                    
+                    # Use different colors for different segments
+                    color_idx = route['segment_index'] % len(route_colors)
+                    color = route_colors[color_idx]
+                    
+                    # Draw route line with thick stroke
+                    cv2.line(image, (start_img_x, start_img_y), (end_img_x, end_img_y), color, 3)
+                    
+                    # Draw start point
+                    cv2.circle(image, (start_img_x, start_img_y), 4, (0, 255, 0), -1)  # Green start
+                    
+                    # Draw end point
+                    cv2.circle(image, (end_img_x, end_img_y), 4, (0, 0, 255), -1)  # Red end
+                    
+                    # Add route segment number at midpoint for first few routes
+                    if i < 10:  # Only label first 10 routes to avoid clutter
+                        mid_x = (start_img_x + end_img_x) // 2
+                        mid_y = (start_img_y + end_img_y) // 2
+                        route_text = f"R{i}"
+                        cv2.putText(image, route_text, (mid_x - 8, mid_y + 4), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.3, (255, 255, 255), 2)  # White with border
+                        cv2.putText(image, route_text, (mid_x - 8, mid_y + 4), 
+                                  cv2.FONT_HERSHEY_SIMPLEX, 0.3, (0, 0, 0), 1)  # Black text
+            
+            # Add title and info
+            obstacle_count = len(obstacles_polygons) if obstacles_polygons else 0
+            if route_count > 0:
+                title = f"Field Polygon - {len(field_coords)} points, {obstacle_count} obstacles, {route_count} routes"
+            else:
+                title = f"Field Polygon - {len(field_coords)} points, {obstacle_count} obstacles"
+            area_m2 = self.calculate_polygon_area(field_coords)
+            subtitle = f"Area: {area_m2:.1f} m² | Bounds: ({min_x:.1f},{min_y:.1f}) to ({max_x:.1f},{max_y:.1f})"
+            
+            cv2.putText(image, title, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
+            cv2.putText(image, subtitle, (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+            
+            # Save image
+            filename = f"{filename_prefix}.png"
+            cv2.imwrite(filename, image)
+            self.get_logger().info(f"Saved field visualization: {filename}")
+            self.get_logger().info(f"Field area: {area_m2:.1f} m², {len(field_coords)} vertices")
+            
+        except Exception as e:
+            self.get_logger().error(f"Error visualizing field polygon: {str(e)}")
+
+    def calculate_polygon_area(self, coords):
+        """Calculate the area of a polygon using the shoelace formula."""
+        if len(coords) < 3:
+            return 0.0
+        
+        area = 0.0
+        n = len(coords)
+        for i in range(n):
+            j = (i + 1) % n
+            area += coords[i][0] * coords[j][1]
+            area -= coords[j][0] * coords[i][1]
+        return abs(area) / 2.0
+
+    def crop_and_find_free_space(self, user_polygon):
+        """
+        Crop the global costmap to the user's polygon and find the largest free space within it.
+        
+        Args:
+            user_polygon: List of [x, y] coordinates defining the field boundary
+            
+        Returns:
+            Tuple of (free_space_polygon, obstacles_polygons) where:
+            - free_space_polygon: List of [x, y] coordinates of the largest free space polygon within the field, or None if none found
+            - obstacles_polygons: List of obstacle polygons, each as a list of [x, y] coordinates
+        """
+        try:
+            if not hasattr(self, 'current_costmap') or not self.current_costmap:
+                self.get_logger().error('No costmap available. Call get costmap service first.')
+                return None, []
+            
+            if not user_polygon or len(user_polygon) < 3:
+                self.get_logger().error('Invalid user polygon provided')
+                return None, []
+            
+            costmap_msg = self.current_costmap
+            self.get_logger().info(f'Cropping costmap to user polygon: {user_polygon}')
+            
+            # Handle HTTP service wrapper format
+            actual_costmap_data = costmap_msg
+            if 'code' in costmap_msg and 'data' in costmap_msg:
+                if costmap_msg['code'] == 0:
+                    actual_costmap_data = costmap_msg['data']
+                else:
+                    self.get_logger().error(f"Costmap data has error code: {costmap_msg['code']}")
+                    return None, []
+            
+            # Extract costmap data
+            costmap_data = actual_costmap_data['data']
+            # Handle different data formats (similar to process_costmap)
+            if isinstance(costmap_data, list) and len(costmap_data) > 0:
+                if isinstance(costmap_data[0], dict):
+                    # Try to extract from dict format
+                    for key in ['value', 'cost', 'data', 'cell_value']:
+                        if key in costmap_data[0]:
+                            try:
+                                data = np.array([cell[key] for cell in costmap_data], dtype=np.uint8)
+                                break
+                            except Exception:
+                                continue
+                    else:
+                        self.get_logger().error("Could not extract numerical data from dict format")
+                        return None, []
+                else:
+                    data = np.array(costmap_data, dtype=np.uint8)
+            else:
+                self.get_logger().error(f"Unexpected costmap data format: {type(costmap_data)}")
+                return None, []
+            
+            data = data.reshape((actual_costmap_data['metadata']['size_y'], actual_costmap_data['metadata']['size_x']))
+            resolution = actual_costmap_data['metadata']['resolution']
+            origin_x = actual_costmap_data['metadata']['origin']['position']['x']
+            origin_y = actual_costmap_data['metadata']['origin']['position']['y']
+
+            self.get_logger().info(f'Costmap resolution: {resolution} m/cell, origin: ({origin_x}, {origin_y})')
+            
+            # Convert user polygon to pixel coordinates
+            user_polygon_pixels = []
+            for point in user_polygon:
+                pixel_x = int((point[0] - origin_x) / resolution)
+                pixel_y = int((point[1] - origin_y) / resolution)
+                # Clamp to valid pixel range
+                pixel_x = max(0, min(pixel_x, actual_costmap_data['metadata']['size_x'] - 1))
+                pixel_y = max(0, min(pixel_y, actual_costmap_data['metadata']['size_y'] - 1))
+                user_polygon_pixels.append([pixel_x, pixel_y])
+            
+            self.get_logger().info(f'User polygon in pixels: {user_polygon_pixels}')
+            
+            # Create a mask for the user polygon
+            mask = np.zeros((actual_costmap_data['metadata']['size_y'], actual_costmap_data['metadata']['size_x']), dtype=np.uint8)
+            polygon_contour = np.array(user_polygon_pixels, dtype=np.int32)
+            cv2.fillPoly(mask, [polygon_contour], 255)
+            
+            # Save mask for debugging
+            cv2.imwrite('debug_mask_user_polygon.png', mask)
+            self.get_logger().info('Saved debug_mask_user_polygon.png')
+            
+            # Create binary image of free space (cost <= 50)
+            free_space_binary = np.zeros_like(data, dtype=np.uint8)
+            free_space_binary[data <= 50] = 255
+            
+            # Save raw free space binary for debugging
+            cv2.imwrite('debug_binary_free_space.png', free_space_binary)
+            
+            # Apply user polygon mask to only consider areas within the polygon
+            cropped_free_space = cv2.bitwise_and(free_space_binary, mask)
+            
+            # Save cropped free space for debugging
+            cv2.imwrite('debug_cropped_free_space.png', cropped_free_space)
+            
+            # Clean up the binary image
+            kernel = np.ones((3,3), np.uint8)
+            cropped_free_space = cv2.morphologyEx(cropped_free_space, cv2.MORPH_CLOSE, kernel)
+            cropped_free_space = cv2.morphologyEx(cropped_free_space, cv2.MORPH_OPEN, kernel)
+            
+            # Find contours in the cropped free space
+            contours, _ = cv2.findContours(cropped_free_space, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if not contours:
+                self.get_logger().warn('No free space contours found within the user polygon')
+                return None, []
+            
+            # Find the largest contour
+            largest_contour = None
+            largest_area_pixels = 0
+            
+            for contour in contours:
+                area_pixels = cv2.contourArea(contour)
+                if area_pixels > largest_area_pixels and area_pixels > 100:  # Minimum size threshold
+                    largest_area_pixels = area_pixels
+                    largest_contour = contour
+            
+            if largest_contour is None:
+                self.get_logger().warn('No sufficiently large free space found within the user polygon')
+                return None, []
+            
+            # Simplify the polygon to reduce number of points
+            # With Shapely validation in place, we can use a reasonable epsilon
+            epsilon = 0.005 * cv2.arcLength(largest_contour, True)
+            simplified_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
+            
+            # Check if simplified contour is valid (not too few points)
+            if len(simplified_contour) < 3:
+                self.get_logger().warn("Simplified contour has too few points, using original contour")
+                simplified_contour = largest_contour
+            
+            # Convert the simplified contour back to world coordinates
+            world_polygon = []
+            for point in simplified_contour:
+                pixel_x, pixel_y = point[0][0], point[0][1]
+                world_x = origin_x + (pixel_x * resolution)
+                world_y = origin_y + (pixel_y * resolution)
+                world_polygon.append([world_x, world_y])
+            
+            largest_area_meters = largest_area_pixels * (resolution ** 2)
+            self.get_logger().info(f'Found largest free space: area={largest_area_meters:.2f} m², points={len(world_polygon)}')
+            self.get_logger().info(f'Free space polygon: {world_polygon[:5]}...')  # First 5 points
+            
+            # Detect obstacles within the cropped area
+            obstacle_binary = np.zeros_like(data, dtype=np.uint8)
+            obstacle_binary[data >= 200] = 255  # High cost areas are obstacles
+            
+            # Save raw obstacle binary
+            cv2.imwrite('debug_binary_obstacles.png', obstacle_binary)
+            
+            # Apply user polygon mask to only consider obstacles within the polygon
+            cropped_obstacles = cv2.bitwise_and(obstacle_binary, mask)
+            
+            # Save cropped obstacles
+            cv2.imwrite('debug_cropped_obstacles.png', cropped_obstacles)
+            
+            # Clean up the obstacle binary image
+            cropped_obstacles = cv2.morphologyEx(cropped_obstacles, cv2.MORPH_CLOSE, kernel)
+            cropped_obstacles = cv2.morphologyEx(cropped_obstacles, cv2.MORPH_OPEN, kernel)
+            
+            # Find obstacle contours
+            obstacle_contours, _ = cv2.findContours(cropped_obstacles, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            # Convert obstacle contours to world coordinates
+            obstacle_polygons = []
+            for obstacle_contour in obstacle_contours:
+                if cv2.contourArea(obstacle_contour) > 25:  # Minimum obstacle size threshold
+                    # Simplify the obstacle polygon
+                    # With Shapely validation, we can use normal simplification
+                    epsilon = 0.005 * cv2.arcLength(obstacle_contour, True)
+                    simplified_obstacle = cv2.approxPolyDP(obstacle_contour, epsilon, True)
+                    
+                    # Convert to world coordinates
+                    obstacle_world = []
+                    for point in simplified_obstacle:
+                        pixel_x, pixel_y = point[0][0], point[0][1]
+                        world_x = origin_x + (pixel_x * resolution)
+                        world_y = origin_y + (pixel_y * resolution)
+                        obstacle_world.append([world_x, world_y])
+                    
+                    if len(obstacle_world) >= 3:  # Valid polygon needs at least 3 points
+                        obstacle_polygons.append(obstacle_world)
+            
+            self.get_logger().info(f'Found {len(obstacle_polygons)} obstacles within the cropped area')
+            
+            # Save debug image with obstacles
+            # Convert to color image
+            debug_image = cv2.cvtColor(cropped_free_space, cv2.COLOR_GRAY2BGR)
+            
+            # Draw all candidate contours in light green
+            for contour in contours:
+                if cv2.contourArea(contour) > 100:
+                    cv2.drawContours(debug_image, [contour], -1, (144, 238, 144), 1)  # Light Green
+            
+            # Draw the largest contour (selected free space) in bright green with thicker line
+            if largest_contour is not None:
+                cv2.drawContours(debug_image, [largest_contour], -1, (0, 255, 0), 3)  # Bright Green
+                
+                # Add label for the largest area
+                M = cv2.moments(largest_contour)
+                if M["m00"] != 0:
+                    cx = int(M["m10"] / M["m00"])
+                    cy = int(M["m01"] / M["m00"])
+                    cv2.putText(debug_image, f"Selected Area: {largest_area_meters:.1f}m2", (cx - 50, cy), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            
+            # Draw user polygon in Blue
+            cv2.drawContours(debug_image, [polygon_contour], -1, (255, 0, 0), 2)  # Blue
+            
+            # Draw obstacles in Red
+            cv2.drawContours(debug_image, obstacle_contours, -1, (0, 0, 255), 2)  # Red
+            
+            # Save the enhanced debug image
+            cv2.imwrite('cropped_costmap_analysis.png', debug_image)
+            self.get_logger().info('Saved enhanced debug image: cropped_costmap_analysis.png')
+            
+            return world_polygon, obstacle_polygons
+            
+        except Exception as e:
+            self.get_logger().error(f'Error cropping costmap and finding free space: {str(e)}')
+            return None, []
+
+
+
+
+    def update_move_forward_xml(self, robot_op_width):
+        """Update the move_forward.xml file with the robot operation width"""
+        try:
+            xml_file_path = "/data/actions/move_forward.xml"
+            
+            # Read the XML file
+            with open(xml_file_path, 'r') as f:
+                content = f.read()
+            
+            # Use regex to replace the distance value in param_json
+            # Pattern matches: distance:number (including decimal)
+            pattern = r'distance:[0-9]*\.?[0-9]+'
+            replacement = f'distance:{robot_op_width}'
+            
+            updated_content = re.sub(pattern, replacement, content)
+            
+            # Write back to file
+            with open(xml_file_path, 'w') as f:
+                f.write(updated_content)
+            
+            self.get_logger().info(f"Updated move_forward.xml with distance: {robot_op_width}")
+            
+        except Exception as e:
+            self.get_logger().error(f"Failed to update move_forward.xml: {str(e)}")
+
+    def destroy_node(self):
+        super().destroy_node()
+
+    def sendTaskRequest(self, waypoints, 
+                        wait_at_first_waypoint=False, 
+                        path_planner='straight', 
+                        default_precise_xy=0.05, 
+                        inflation_radius=0.1,
+                        allow_reverse_to_first_waypoint=False,
+                        task_name="default_task",
+                        map_id=0):  
+        flask_ros_url = 'http://127.0.0.1:1233'
+        ros_data = {
+            "wps": [],
+            "name": task_name,
+            "stop_on_failure": True,
+            "is_repeat": False,
+            "task_uid": "test_task",
+            "use_path_map": False,
+            "repeat_times": 0,
+            "description": json.dumps({"polygon": self.current_polygon, "path": self.current_routes, "op_width": self.current_robot_op_width}),
+            "map_id": map_id
+            }
+        index = 0
+        for waypoint in waypoints:
+            # Only process first waypoint (index 0) and odd-indexed waypoints (1, 3, 5, ...)
+            if index == 0 or index % 2 == 1:
+                actions = []
+                precise_xy = default_precise_xy
+                if index == 0 and allow_reverse_to_first_waypoint:
+                    precise_xy = 0.12
+                    allow_reverse = True
+                else:
+                    allow_reverse = False
+                
+                # Add rotation and forward movement actions for odd-indexed waypoints (since we start from index 0)
+                if index % 2 == 1 and index < len(waypoints) - 1:  # Odd index and not the last waypoint
+                    # Robot's current orientation is the vector from previous waypoint to current waypoint
+                    current_wp = waypoint
+                    prev_wp = waypoints[index - 1]
+                    next_wp = waypoints[index + 1]
+
+                    # Calculate robot's current heading (from previous to current waypoint)
+                    current_heading_x = current_wp.x - prev_wp.x
+                    current_heading_y = current_wp.y - prev_wp.y
+
+                    # Calculate vector to next waypoint
+                    to_next_x = next_wp.x - current_wp.x
+                    to_next_y = next_wp.y - current_wp.y
+
+                    # Use cross product to determine if next waypoint is to the right or left
+                    # Cross product: current_heading × to_next = (hx * ny - hy * nx)
+                    cross_product = current_heading_x * to_next_y - current_heading_y * to_next_x
+
+                    # If cross_product > 0: next waypoint is to the left (counter-clockwise)
+                    # If cross_product < 0: next waypoint is to the right (clockwise)
+                    rotate_action = None
+                    rotate_action2 = None
+                    if cross_product > 0:  # Next waypoint is to the left
+                        # Rotate 90 degrees to the left (counter-clockwise)
+                        rotate_action = 'rotate_left90'
+                        rotate_action2 = 'rotate_left90_check_collision'
+
+                    else:  # Next waypoint is to the right
+                        # Rotate 90 degrees to the right (clockwise)
+                        rotate_action = 'rotate_right90'
+                        rotate_action2 = 'rotate_right90_check_collision'
+
+                    actions.append({
+                        'name': rotate_action,
+                    })
+                    # Add forward movement action (0.5m)
+                    actions.append({
+                        'name': 'move_forward',
+                    })
+                    actions.append({
+                        'name': rotate_action2,
+                    })
+
+                    # Set precise_rad to 0.03 for odd index waypoints
+                    precise_rad = 0.03
+
+                    # Calculate target orientation as the direction from previous waypoint to current waypoint
+                    dx = current_wp.x - prev_wp.x
+                    dy = current_wp.y - prev_wp.y
+                    target_yaw = math.atan2(dy, dx)
+
+                    # Convert yaw to quaternion (z, w components for 2D rotation)
+                    target_orientation_z = math.sin(target_yaw / 2.0)
+                    target_orientation_w = math.cos(target_yaw / 2.0)
+                else:
+                    precise_rad = 6.28
+                    target_orientation_z = 0.0
+                    target_orientation_w = 1.0
+
+
+
+                wp = {
+                    'pose': {
+                        'position': {
+                            'x': waypoint.x,
+                            'y': waypoint.y
+                        },
+                        'orientation': {
+                            'z': target_orientation_z,
+                            'w': target_orientation_w
+                        }
+                    },
+                    'is_dest': True,
+                    'precise_xy': precise_xy,
+                    'precise_rad': precise_rad,
+                    'nav_type': path_planner,
+                    'actions': actions,
+                    'is_reverse': False,
+                    'allow_reverse': allow_reverse,
+                    'inflation_radius': 0.7,
+                    'uid': f'wp_{index}',
+                }
+                ros_data['wps'].append(wp)
+                ros_data['stop_on_failure'] = False
+            
+            index += 1
+        url = "{}/create_task".format(flask_ros_url)
+        
+        response = requests.post(url, json=ros_data)
+        result_code = response.json()['code']
+        if result_code != 0:
+            return False, response.json()['error']
+        else:
+            return True, response.json()['task_id']
+
+    def startup(self, node_name='bt_navigator'):
+        # Waits for the node within the tester namespace to become active
+        print(f'Waiting for {node_name} to become active..')
+        node_service = f'{node_name}/get_state'
+        state_client = self.create_client(GetState, node_service)
+        while not state_client.wait_for_service(timeout_sec=1.0):
+            print(f'{node_service} service not available, waiting...')
+
+        req = GetState.Request()
+        state = 'unknown'
+        while state != 'active':
+            print(f'Getting {node_name} state...')
+            future = state_client.call_async(req)
+            # Use a timeout and check if done rather than spin_until_future_complete
+            timeout_count = 0
+            while not future.done() and timeout_count < 50:  # 5 second timeout
+                time.sleep(0.1)
+                timeout_count += 1
+            
+            if future.done() and future.result() is not None:
+                state = future.result().current_state.label
+                print(f'Result of get_state: {state}')
+            else:
+                print(f'Timeout getting {node_name} state, retrying...')
+            time.sleep(2)
+        return
+
+    def toPolygon(self, field, rings):
+        """
+        Convert field and rings (obstacles) to Fields2Cover Cells object.
+        Uses Shapely to fix any invalid geometries (self-intersections) before conversion.
+        """
+        try:
+            # 1. Create and fix outer polygon using Shapely
+            if not field:
+                return f2c.Cells()
+                
+            # Ensure closed ring for shapely
+            outer_coords = list(field)
+            if len(outer_coords) > 0 and (outer_coords[0] != outer_coords[-1]):
+                outer_coords.append(outer_coords[0])
+                
+            poly = ShapelyPolygon(outer_coords)
+            
+            # Fix invalid geometry (buffer(0) trick or make_valid)
+            if not poly.is_valid:
+                self.get_logger().warn(f"Outer polygon is invalid: {poly.is_valid.reason if hasattr(poly, 'is_valid') else 'unknown'}. Fixing...")
+                poly = make_valid(poly)
+                # If result is MultiPolygon, take the largest one
+                if poly.geom_type == 'MultiPolygon':
+                    poly = max(poly.geoms, key=lambda a: a.area)
+                elif poly.geom_type == 'GeometryCollection':
+                     # Extract Polygons from collection
+                    polys = [g for g in poly.geoms if g.geom_type == 'Polygon']
+                    if polys:
+                        poly = max(polys, key=lambda a: a.area)
+                    else:
+                        self.get_logger().error("Failed to fix polygon: No polygon found in fixed geometry")
+                        return f2c.Cells()
+            
+            # 2. Process obstacles (holes)
+            valid_holes = []
+            for ring in rings:
+                if not ring:
+                    continue
+                    
+                # Ensure closed ring
+                hole_coords = list(ring)
+                if len(hole_coords) > 0 and (hole_coords[0] != hole_coords[-1]):
+                    hole_coords.append(hole_coords[0])
+                
+                hole_poly = ShapelyPolygon(hole_coords)
+                
+                if not hole_poly.is_valid:
+                    hole_poly = make_valid(hole_poly)
+                    if hole_poly.geom_type == 'MultiPolygon':
+                        # If obstacle splits, add all parts
+                        for part in hole_poly.geoms:
+                            valid_holes.append(part)
+                        continue
+                    elif hole_poly.geom_type == 'GeometryCollection':
+                        for part in hole_poly.geoms:
+                            if part.geom_type == 'Polygon':
+                                valid_holes.append(part)
+                        continue
+                
+                valid_holes.append(hole_poly)
+
+            # 3. Subtract holes from the main polygon
+            # This handles cases where holes might overlap or be outside the main polygon
+            final_poly = poly
+            for hole in valid_holes:
+                try:
+                    final_poly = final_poly.difference(hole)
+                except Exception as e:
+                    self.get_logger().warn(f"Failed to subtract hole: {e}")
+
+            # 4. Convert back to Fields2Cover types
+            cells = f2c.Cells()
+            
+            def shapely_to_f2c_cell(shapely_poly):
+                # Extract exterior
+                ext_coords = list(shapely_poly.exterior.coords)
+                points = []
+                for x, y in ext_coords:
+                    points.append(f2c.Point(x, y))
+                
+                cell = f2c.Cell(f2c.LinearRing(f2c.VectorPoint(points)))
+                
+                # Extract interiors (holes)
+                for interior in shapely_poly.interiors:
+                    int_coords = list(interior.coords)
+                    hole_points = []
+                    for x, y in int_coords:
+                        hole_points.append(f2c.Point(x, y))
+                    cell.addRing(f2c.LinearRing(f2c.VectorPoint(hole_points)))
+                return cell
+
+            if final_poly.geom_type == 'Polygon':
+                cells.addGeometry(shapely_to_f2c_cell(final_poly))
+            elif final_poly.geom_type == 'MultiPolygon':
+                for part in final_poly.geoms:
+                    cells.addGeometry(shapely_to_f2c_cell(part))
+            
+            return cells
+            
+        except Exception as e:
+            self.get_logger().error(f"Error converting to F2C polygon: {str(e)}")
+            # Fallback to simple conversion if shapely fails
+            self.get_logger().warn("Falling back to simple conversion")
+            return self._toPolygon_simple(field, rings)
+
+    def _toPolygon_simple(self, field, rings):
+        """Original simple conversion method as fallback"""
+        points = []
+        for coord in field:
+            p = f2c.Point(coord[0], coord[1])
+            points.append(p)
+        
+        # Ensure outer ring is closed
+        if len(points) > 0 and (points[0].X() != points[-1].X() or points[0].Y() != points[-1].Y()):
+            points.append(points[0])
+            
+        cell = f2c.Cell(f2c.LinearRing(f2c.VectorPoint(points)))
+        
+        for ring in rings:
+            r = f2c.LinearRing()
+            ring_points = []
+            for coord in ring:
+                p = f2c.Point(coord[0], coord[1])
+                r.addPoint(p)
+                ring_points.append(p)
+            
+            # Ensure inner rings are closed
+            if len(ring_points) > 0 and (ring_points[0].X() != ring_points[-1].X() or ring_points[0].Y() != ring_points[-1].Y()):
+                r.addPoint(ring_points[0])
+            
+            cell.addRing(r)
+            
+        cells = f2c.Cells(cell)
+        return cells
+    
+    def generate_coverage_path(self, 
+                               cells,
+                               robot_width, 
+                               robot_op_width,
+                               robot_min_turning_radius=1e-8,
+                               robot_max_diff_curvature=1e8,
+                               robot_cruise_vel=0.5,
+                               robot_turn_vel=0.5,
+                               use_decomposition=True,
+                               decomposition_type='Trapezoidal',
+                               headland_width=1.0,
+                               swath_mode='BRUTE_FORCE',
+                               swath_step_angle=0.1,
+                               swath_obj="LENGTH",
+                               swath_allow_overlap=False,
+                               swath_set_angle=0.0,
+                               route_mode="AUTO",
+                               route_start=None,
+                               route_spiral=2,
+                               route_custom_order=[]
+                               ):
+        robot = f2c.Robot(robot_width, robot_op_width)
+        robot.setMinTurningRadius(robot_min_turning_radius)
+        robot.setMaxDiffCurv(robot_max_diff_curvature)
+        robot.setCruiseVel(robot_cruise_vel)
+        robot.setTurnVel(robot_turn_vel)
+        const_hl = f2c.HG_Const_gen()
+        
+        obj = f2c.OBJ_NSwathModified()
+
+        # Step 1: Decomposition
+        if use_decomposition:
+            # Check for decomposition classes with error handling for older versions or different naming
+            if decomposition_type == 'Boustrophedon':
+                if hasattr(f2c, 'DECOMP_BoustrophedonDecomp'):
+                    decomp = f2c.DECOMP_BoustrophedonDecomp()
+                elif hasattr(f2c, 'DecompositionBoustrophedon'): # Alternative name
+                    decomp = f2c.DecompositionBoustrophedon()
+                else:
+                    self.get_logger().warn("Boustrophedon decomposition not found, falling back to Trapezoidal")
+                    decomp = f2c.DECOMP_TrapezoidalDecomp()
+                    decomp.setSplitAngle(0.5*math.pi)
+            else:
+                decomp = f2c.DECOMP_TrapezoidalDecomp()
+                decomp.setSplitAngle(0.5*math.pi)
+            cells = decomp.decompose(cells) 
+
+        # Step 2: Generate headlands 
+        no_hl_decomp = const_hl.generateHeadlands(cells, headland_width)
+        rem_area = f2c.OBJ_RemArea()
+        self.get_logger().info("The remaining area is {}, and with sign is {}".format(rem_area.computeCost(cells, no_hl_decomp), rem_area.computeCostWithMinimizingSign(cells, no_hl_decomp)))
+
+        # Step 3: Generate swaths
+        bf = f2c.SG_BruteForce()
+        bf.setAllowOverlap(swath_allow_overlap)
+        coverage_width = robot.getCovWidth()
+        if swath_mode == 'BRUTE_FORCE':
+            bf.setStepAngle(swath_step_angle)
+            if swath_obj == 'LENGTH':
+                obj = f2c.OBJ_SwathLength()
+            elif swath_obj == 'NUMBER':
+                obj = f2c.OBJ_NSwath()
+            elif swath_obj == 'NUMBER_MODIFIED':
+                obj = f2c.OBJ_NSwathModified()
+            elif swath_obj == 'COVERAGE':
+                obj = f2c.OBJ_FieldCoverage()
+       
+            swaths = bf.generateBestSwaths(obj, coverage_width, no_hl_decomp)
+        elif swath_mode == 'SET_ANGLE':
+            swaths = bf.generateSwaths(swath_set_angle, coverage_width, no_hl_decomp)   
+            
+            # Optimize swaths: Combine adjacent collinear swaths
+            # This reduces the number of turns and waypoints
+            self.get_logger().info(f'Before optimization: {swaths.size()} swath segments')
+            
+            optimized_swaths_by_cells = f2c.SwathsByCells()
+            
+            for i in range(swaths.size()):
+                cell_swaths = swaths.at(i)
+                if cell_swaths.size() <= 1:
+                    optimized_swaths_by_cells.push_back(cell_swaths)
+                    continue
+                    
+                optimized_cell_swaths = f2c.Swaths()
+                current_swath = cell_swaths.at(0)
+                
+                for j in range(1, cell_swaths.size()):
+                    next_swath = cell_swaths.at(j)
+                    
+                    # Calculate direction vectors
+                    curr_dx = current_swath.endPoint().X() - current_swath.startPoint().X()
+                    curr_dy = current_swath.endPoint().Y() - current_swath.startPoint().Y()
+                    next_dx = next_swath.endPoint().X() - next_swath.startPoint().X()
+                    next_dy = next_swath.endPoint().Y() - next_swath.startPoint().Y()
+                    
+                    curr_len = math.sqrt(curr_dx**2 + curr_dy**2)
+                    next_len = math.sqrt(next_dx**2 + next_dy**2)
+                    
+                    if curr_len < 1e-3 or next_len < 1e-3:
+                        optimized_cell_swaths.push_back(current_swath)
+                        current_swath = next_swath
+                        continue
+                        
+                    # Normalize
+                    curr_dx /= curr_len
+                    curr_dy /= curr_len
+                    next_dx /= next_len
+                    next_dy /= next_len
+                    
+                    # Dot product close to 1 means parallel/collinear
+                    dot_prod = curr_dx * next_dx + curr_dy * next_dy
+                    
+                    # Check if they are connected (gap check)
+                    gap_x = next_swath.startPoint().X() - current_swath.endPoint().X()
+                    gap_y = next_swath.startPoint().Y() - current_swath.endPoint().Y()
+                    gap_dist = math.sqrt(gap_x**2 + gap_y**2)
+                    
+                    # Check if they are truly collinear (part of same line)
+                    # Parallel lines are not enough, they must align.
+                    # Vector from current end to next end must align with current direction
+                    conn_dx = next_swath.endPoint().X() - current_swath.endPoint().X()
+                    conn_dy = next_swath.endPoint().Y() - current_swath.endPoint().Y()
+                    conn_len = math.sqrt(conn_dx**2 + conn_dy**2)
+                    
+                    collinear_check = 0.0
+                    if conn_len > 1e-3:
+                        collinear_check = (conn_dx/conn_len) * curr_dx + (conn_dy/conn_len) * curr_dy
+                    
+                    # Conditions:
+                    # 1. Parallel (dot_prod ~ 1)
+                    # 2. Connected (gap_dist small)
+                    # 3. Aligned (collinear_check ~ 1) - prevents combining parallel tracks
+                    
+                    if dot_prod > 0.999 and collinear_check > 0.999:
+                        self.get_logger().info(f"Combining swaths in cell {i}: dot={dot_prod:.4f}, gap={gap_dist:.4f}, align={collinear_check:.4f}")
+                        combined_line = f2c.LineString()
+                        combined_line.addPoint(current_swath.startPoint())
+                        combined_line.addPoint(next_swath.endPoint())
+                        current_swath = f2c.Swath(combined_line, current_swath.getWidth(), current_swath.getId())
+                    else:
+                        optimized_cell_swaths.push_back(current_swath)
+                        current_swath = next_swath
+                
+                optimized_cell_swaths.push_back(current_swath)
+                # Add the optimized swaths for this cell to the collection
+                optimized_swaths_by_cells.push_back(optimized_cell_swaths)
+            
+            # Update swaths variable with optimized version
+            swaths = optimized_swaths_by_cells
+            self.get_logger().info(f'After optimization: {swaths.size()} swath segments (cells)')
+
+        self.get_logger().info(f'生成 {swaths.size()} 组覆盖路径')
+        swath_length = f2c.OBJ_SwathLength()
+        self.get_logger().info(f'覆盖路径总长度约为 {swath_length.computeCost(no_hl_decomp, swaths):.2f} 米')  
+
+        # Step 4: Plan route
+        vector_swaths = None
+        path_length = 0.0
+        
+        if route_mode == "AUTO":    
+            route_planner = f2c.RP_RoutePlannerBase()
+            if route_start is not None:
+                start_point = f2c.Point(route_start[0], route_start[1])
+                route_planner.setStartAndEndPoint(start_point)
+            route = route_planner.genRoute(no_hl_decomp, swaths)
+            path_length = route.length()
+            vector_swaths = route.getVectorSwaths()
+        else:
+            # Handle pattern-based routing (per cell)
+            vector_swaths = f2c.SwathsByCells()
+            
+            for i in range(swaths.size()):
+                cell_swaths = swaths.at(i)
+                sorted_swaths = None
+                
+                if route_mode == "BOUSTROPHEDON":
+                    sorter = f2c.RP_Boustrophedon()
+                    sorted_swaths = sorter.genSortedSwaths(cell_swaths, 0)
+                elif route_mode == "SNAKE":
+                    sorter = f2c.RP_Snake()
+                    sorted_swaths = sorter.genSortedSwaths(cell_swaths, 0)
+                elif route_mode == "SPIRAL":
+                    sorter = f2c.RP_Spiral(route_spiral)
+                    sorted_swaths = sorter.genSortedSwaths(cell_swaths, 0)
+                elif route_mode == "CUSTOM":
+                    # If no custom order provided or length mismatch, generate a default sequential order
+                    # This prevents crashes if user doesn't know the exact number of swaths beforehand
+                    num_swaths = cell_swaths.size()
+                    current_order = route_custom_order
+                    
+                    if not current_order or len(current_order) != num_swaths:
+                        self.get_logger().warn(f"Custom order length ({len(current_order)}) mismatch with swaths count ({num_swaths}). Using sequential order.")
+                        current_order = list(range(num_swaths))
+                    
+                    # Validate that the order contains valid indices
+                    if not all(0 <= idx < num_swaths for idx in current_order) or len(set(current_order)) != num_swaths:
+                         self.get_logger().warn("Custom order contains invalid indices or duplicates. Using sequential order.")
+                         current_order = list(range(num_swaths))
+
+                    sorter = f2c.RP_CustomOrder(current_order)
+                    sorted_swaths = sorter.genSortedSwaths(cell_swaths, 0)
+                else:
+                    self.get_logger().error(f"Unknown route mode: {route_mode}, using original order")
+                    sorted_swaths = cell_swaths
+                
+                vector_swaths.push_back(sorted_swaths)
+                
+                # Approximate length (sum of swath lengths)
+                for k in range(sorted_swaths.size()):
+                    path_length += sorted_swaths.at(k).length()
+            
+        self.get_logger().info(f'规划的路径总长度约为 {path_length:.2f} 米')
+        # vector_swaths is already prepared
+        size = vector_swaths.size()
+        self.get_logger().info(f'路径包含 {size} 条覆盖路径段')
+        self.current_waypoints = []
+        self.current_routes = []  # Reset routes for new coverage generation
+        
+        for i in range(size):
+            size_swaths = vector_swaths[i].size()
+            swaths = vector_swaths[i]
+            for j in range(size_swaths):
+                swath = swaths.at(j)
+                 # Log start and end points of each swath
+                
+                start_point = swath.startPoint()
+                point = Point32(x=start_point.X(), y=start_point.Y(), z=0.0)
+                self.current_waypoints.append(point)
+                end_point = swath.endPoint()
+                length_from_start = math.sqrt((end_point.X() - start_point.X())**2 + (end_point.Y() - start_point.Y())**2)
+                self.get_logger().info(f'Swath {i}-{j}: Start({start_point.X():.2f}, {start_point.Y():.2f}) End({end_point.X():.2f}, {end_point.Y():.2f}) Length: {length_from_start:.2f} m')
+                ####################################
+                # Calculate direction vector
+                dx = end_point.X() - start_point.X()
+                dy = end_point.Y() - start_point.Y()
+
+                # Current length of the line segment
+                current_length = math.sqrt(dx**2 + dy**2)
+
+                # Avoid division by zero if points are the same
+                if current_length == 0:
+                    # Handle as needed (e.g., no extension or error)
+                    point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
+                else:
+                    # Unit vector components
+                    ux = dx / current_length
+                    uy = dy / current_length
+                    
+                    # Extend by extension_length (replace with your actual value or variable)
+                    extension_length = 0.1  
+                    
+                    # New end point coordinates
+                    new_ex = end_point.X() + ux * extension_length
+                    new_ey = end_point.Y() + uy * extension_length
+                    
+                    point = Point32(x=new_ex, y=new_ey, z=0.0)
+                ####################################
+                # point = Point32(x=end_point.X(), y=end_point.Y(), z=0.0)
+                self.current_waypoints.append(point)
+                
+                # Store route segment for visualization
+                route_segment = {
+                    'start': [start_point.X(), start_point.Y()],
+                    'end': [end_point.X(), end_point.Y()],
+                    'segment_index': i,
+                    'swath_index': j
+                }
+                self.current_routes.append(route_segment)
+                
+                # self.get_logger().info(f'Swath {i}-{j}: Start({start_point.X():.2f}, {start_point.Y():.2f}) End({end_point.X():.2f}, {end_point.Y():.2f})')
+        # Step 5: Plan path
+
+
+
+        f2c.Visualizer.figure()
+        f2c.Visualizer.plot(cells)
+        
+        if route_mode == "AUTO":
+            f2c.Visualizer.plot(route)
+        elif vector_swaths is not None:
+            # Plot sorted swaths for non-auto modes
+            for i in range(vector_swaths.size()):
+                f2c.Visualizer.plot(vector_swaths.at(i))
+
+        f2c.Visualizer.save("Tutorial_image.png")
+
+
+
+
+class CoverageNavigatorServer(CoverageNavigatorTester):
+    """扩展CoverageNavigatorTester以提供HTTP API功能。"""
+    
+    def __init__(self):
+        super().__init__()
+        self.app = Flask(__name__)
+        self.repeat_times = 1
+        self.current_repeat = 0
+        # self.robot_navigator = BasicNavigator()
+        self.setup_routes()
+        
+    def setup_routes(self):
+        """设置HTTP路由。"""
+        @self.app.route('/navigate_coverage', methods=['POST'])
+        def handle_navigate_coverage():
+            try:
+                logging.info(f"收到导航请求，内容类型: {request.content_type}")
+                
+                if not request.is_json:
+                    logging.error(f"请求不是JSON格式: {request.data}")
+                    return jsonify({"code": 1,"error": "请求必须是JSON格式"}), 400
+                
+                data = request.get_json(force=True)  # 使用force=True尝试强制解析JSON
+                logging.info(f"解析的JSON数据: {data}")
+                
+                if 'field' not in data:
+                    return jsonify({"code": 1,"error": "缺少'field'字段"}), 400
+                    
+                user_field = data['field']
+                self.current_polygon = user_field
+                if not isinstance(user_field, list) or len(user_field) < 3:
+                    return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
+                
+                use_user_field = True
+                if 'use_user_field' in data:
+                    use_user_field = data['use_user_field']
+                
+                field = None
+                obstacles_to_use = []
+
+                if use_user_field:
+                    field = user_field
+                    obstacles_to_use = data.get('rings', [])
+                    self.visualize_field_polygon(field, "user_provided_field", obstacles_polygons=obstacles_to_use)
+                    self.get_logger().info(f"Using user-provided field: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
+                else:
+                    # Get the largest free space from costmap analysis
+                    if self.call_get_costmap_service():
+                        field, obstacles = self.crop_and_find_free_space(user_field)
+                        if field:
+                            avoid_obstacles = data.get('avoid_obstacles', False)
+                            if avoid_obstacles:
+                                obstacles_to_use = obstacles
+                            else:
+                                obstacles_to_use = []
+                            self.visualize_field_polygon(field, "cropped_free_space", obstacles)
+                            self.get_logger().info(f"Using cropped free space: {len(field)} vertices, area ≈ {self.calculate_polygon_area(field):.1f} m²")
+                            self.get_logger().info(f"Found {len(obstacles)} obstacles within the field")
+                     
+                    
+                if not field:
+                    return jsonify({"code": 1,"error": "在用户指定区域内未找到可用的自由空间"}), 404
+                
+                # Ensure the polygon is closed (first point equals last point)
+                if field[0] != field[-1]:
+                    field.append(field[0])
+                
+                if "mode" in data:
+                    mode = data['mode']
+                    if mode not in ['SET_ANGLE', 'BRUTE_FORCE']:
+                        return jsonify({"code": 1,"error": "'mode must be 'SET_ANGLE' or 'BRUTE_FORCE'"}), 400
+                else:
+                    mode = 'SET_ANGLE'
+                
+                if "best_angle" in data:
+                    swath_angle = data['best_angle']
+                    
+                    if not isinstance(swath_angle, (int, float)):
+                        return jsonify({"code": 1,"error": "'best_angle'必须是数字"}), 400
+                    swath_angle = math.radians(swath_angle)  # 转换为弧度
+                else:
+                    swath_angle = 0.0
+
+                if "step_angle" in data:
+                    step_angle = data['step_angle']
+                    if not isinstance(step_angle, (int, float)):
+                        return jsonify({"code": 1,"error": "'step_angle'必须是数字"}), 400
+                    step_angle = math.radians(step_angle)
+                else:
+                    step_angle = 0.2
+                if "objective" in data:
+                    objective = data['objective']
+                    if objective not in ['LENGTH', 'NUMBER', 'COVERAGE']:
+                        return jsonify({"code": 1,"error": "'objective'必须是'LENGTH', 'NUMBER'或'COVERAGE'"}), 400
+                else:
+                    objective = 'COVERAGE'
+                
+                if "repeat_times" in data:
+                    repeat_times = data['repeat_times']
+                    if not isinstance(repeat_times, int) or repeat_times < 1:
+                        return jsonify({"code": 1,"error": "'repeat_times'必须是正整数"}), 400
+                else:
+                    repeat_times = 1
+
+
+                # Update move_forward.xml with robot_op_width before generating coverage path
+                robot_op_width = data.get('robot_op_width', 1.0)
+                if robot_op_width <= 0:
+                    return jsonify({"code": 1,"error": "'robot_op_width'必须大于0"}), 400
+                self.update_move_forward_xml(robot_op_width)
+                self.current_robot_op_width = robot_op_width
+
+                cells = self.toPolygon(field, obstacles_to_use)
+                self.generate_coverage_path(
+                    cells=cells,
+                    robot_width= data.get('robot_width', 1.0),
+                    robot_op_width= robot_op_width,
+                    robot_min_turning_radius= data.get('robot_min_turning_radius', 1e-8),
+                    robot_max_diff_curvature= data.get('robot_max_diff_curvature', 1e8),
+                    robot_cruise_vel= data.get('robot_cruise_vel', 0.5),
+                    robot_turn_vel= data.get('robot_turn_vel', 0.5),
+                    use_decomposition= data.get('use_decomposition', True),
+                    decomposition_type= data.get('decomposition_type', 'Trapezoidal'),
+                    headland_width= data.get('headland_width', 1.0),
+                    swath_allow_overlap= data.get('swath_allow_overlap', False),
+                    swath_mode= mode,
+                    swath_set_angle= swath_angle,
+                    swath_step_angle= step_angle,
+                    swath_obj= objective,
+                    route_mode= data.get('route_mode', 'AUTO'),
+                    route_start= data.get('route_start', None),
+                    route_spiral= data.get('route_spiral', 2),
+                    route_custom_order= data.get('route_custom_order', [])
+
+                )
+
+                    
+                
+
+
+
+                # for swaths in swaths_decomp:
+                #     for swath in swaths:
+                #         self.get_logger().info(f'Swath from ({swath.start.x:.2f}, {swath.start.y:.2f}) to ({swath.end.x:.2f}, {swath.end.y:.2f})')
+
+
+                # no_hl_wo_decomp = const_hl.generateHeadlands(cells, 3.0 * r_w)
+
+                    
+                # 在新线程中启动导航任务
+                # self.task_thread = threading.Thread(target=self._run_navigation_task, args=(field, swath_angle, repeat_times, mode, objective, step_angle))
+                # self.task_thread.start()
+                # path = self._run_navigation_task(field, swath_angle, repeat_times, mode, objective, step_angle)
+
+                # Generate visualization with coverage routes after path planning
+                self.get_logger().info(f"Generated {len(self.current_routes)} coverage route segments")
+                if hasattr(self, 'current_routes') and self.current_routes:
+                    if use_user_field:
+                        # Re-visualize user field with routes
+                        self.visualize_field_polygon(field, "user_provided_field_with_routes", coverage_routes=self.current_routes)
+                    else:
+                        # Re-visualize cropped free space with routes and obstacles  
+                        if 'obstacles' in locals():
+                            self.visualize_field_polygon(field, "cropped_free_space_with_routes", obstacles, self.current_routes)
+                        else:
+                            self.visualize_field_polygon(field, "cropped_free_space_with_routes", coverage_routes=self.current_routes)
+
+                return jsonify({"code": 0, "path": self.current_routes, "status": "导航任务已启动"}), 202
+            except Exception as e:
+                logging.exception("处理导航请求时出错:")
+                return jsonify({"code": 1, "error": f"服务器处理请求时发生错误: {str(e)}"}), 500
+
+        @self.app.route('/navigate_coverage', methods=['OPTIONS'])
+        def handle_options():
+            response = Response()
+            response.headers.add("Access-Control-Allow-Origin", "*")
+            response.headers.add("Access-Control-Allow-Headers", "Content-Type")
+            response.headers.add("Access-Control-Allow-Methods", "POST, OPTIONS")
+            return response
+
+
+        @self.app.route('/start_navigation', methods=['POST'])
+        def handle_start_navigation():
+            data = request.get_json()
+            wait_at_first_waypoint = data.get('wait_at_first_waypoint', False)
+            path_planner = data.get('path_planner', 'straight')
+            precise_xy = data.get('precise_xy', 0.08)
+            task_name = data.get('task_name', 'coverage_task')
+            inflation_radius = data.get('inflation_radius', 0.1)
+            allow_reverse_to_first_waypoint = data.get('allow_reverse_to_first_waypoint', False)
+            map_id = data.get('map_id', 0)
+            if map_id == 0:
+                return jsonify({
+                    "code": 1,
+                    "error": "需要提供Map ID参数"
+                }), 400
+
+            if self.current_waypoints is None or len(self.current_waypoints) == 0:
+                return jsonify({
+                    "code": 1,
+                    "error": "没有可用的导航路径，请先调用 /navigate_coverage 接口"
+                }), 400
+            result, task_id = self.sendTaskRequest(self.current_waypoints, 
+                                          wait_at_first_waypoint=wait_at_first_waypoint, 
+                                          path_planner=path_planner, 
+                                          default_precise_xy=precise_xy, 
+                                          inflation_radius=inflation_radius,
+                                          allow_reverse_to_first_waypoint=allow_reverse_to_first_waypoint,
+                                          task_name=task_name,
+                                          map_id=map_id)
+            if not result:
+                return jsonify({
+                    "code": 1,
+                    "error": task_id
+                }), 500
+            self.current_waypoints = None  # 清除当前路径，防止重复提交
+            return jsonify({
+                "code": 0,
+                "status": "任务生成成功",
+                "task_id": task_id
+            }), 200
+
+
+        @self.app.route('/save_config', methods=['POST'])
+        def handle_save_config():
+            """保存前端配置到服务器"""
+            try:
+                data = request.get_json()
+                if not data:
+                    return jsonify({"code": 1, "error": "请求体不能为空"}), 400
+                
+                config_name = data.get('config_name')
+                config_data = data.get('config_data')
+                
+                if not config_name:
+                    return jsonify({"code": 1, "error": "缺少配置名称 'config_name'"}), 400
+                
+                if not config_data:
+                    return jsonify({"code": 1, "error": "缺少配置数据 'config_data'"}), 400
+                
+                # 确保配置目录存在
+                config_dir = os.path.join(os.getcwd(), 'frontend_configs')
+                if not os.path.exists(config_dir):
+                    os.makedirs(config_dir)
+                
+                # 构建配置文件路径
+                config_file = os.path.join(config_dir, f"{config_name}.json")
+                
+                # 准备保存的数据，包含元数据
+                save_data = {
+                    "config_name": config_name,
+                    "saved_time": time.time(),
+                    "config_data": config_data
+                }
+                
+                # 保存配置到JSON文件
+                with open(config_file, 'w', encoding='utf-8') as f:
+                    json.dump(save_data, f, ensure_ascii=False, indent=2)
+                
+                logging.info(f"配置已保存: {config_file}")
+                
+                return jsonify({
+                    "code": 0,
+                    "status": "配置保存成功",
+                    "config_name": config_name,
+                    "file_path": config_file
+                }), 200
+                
+            except Exception as e:
+                logging.exception("保存配置时出错:")
+                return jsonify({"code": 1, "error": f"保存配置失败: {str(e)}"}), 500
+
+        @self.app.route('/load_config/<config_name>', methods=['GET'])
+        def handle_load_config(config_name):
+            """加载指定名称的前端配置"""
+            try:
+                config_dir = os.path.join(os.getcwd(), 'frontend_configs')
+                config_file = os.path.join(config_dir, f"{config_name}.json")
+                
+                if not os.path.exists(config_file):
+                    return jsonify({"code": 1, "error": f"配置文件不存在: {config_name}"}), 404
+                
+                with open(config_file, 'r', encoding='utf-8') as f:
+                    config_data = json.load(f)
+                
+                logging.info(f"配置已加载: {config_file}")
+                
+                return jsonify({
+                    "code": 0,
+                    "status": "配置加载成功",
+                    "config_name": config_data.get('config_name', config_name),
+                    "saved_time": config_data.get('saved_time'),
+                    "config_data": config_data.get('config_data')
+                }), 200
+                
+            except Exception as e:
+                logging.exception("加载配置时出错:")
+                return jsonify({"code": 1, "error": f"加载配置失败: {str(e)}"}), 500
+
+        @self.app.route('/list_configs', methods=['GET'])
+        def handle_list_configs():
+            """列出所有可用的前端配置"""
+            try:
+                config_dir = os.path.join(os.getcwd(), 'frontend_configs')
+                
+                if not os.path.exists(config_dir):
+                    return jsonify({
+                        "code": 0,
+                        "status": "没有找到配置文件",
+                        "configs": []
+                    }), 200
+                
+                configs = []
+                for filename in os.listdir(config_dir):
+                    if filename.endswith('.json'):
+                        config_name = filename[:-5]  # 移除.json后缀
+                        config_file = os.path.join(config_dir, filename)
+                        
+                        try:
+                            with open(config_file, 'r', encoding='utf-8') as f:
+                                config_data = json.load(f)
+                            
+                            configs.append({
+                                "config_name": config_name,
+                                "saved_time": config_data.get('saved_time'),
+                                "file_size": os.path.getsize(config_file)
+                            })
+                        except Exception as e:
+                            logging.warning(f"无法读取配置文件 {filename}: {str(e)}")
+                            continue
+                
+                # 按保存时间排序，最新的在前面
+                configs.sort(key=lambda x: x.get('saved_time', 0), reverse=True)
+                
+                logging.info(f"找到 {len(configs)} 个配置文件")
+                
+                return jsonify({
+                    "code": 0,
+                    "status": f"找到 {len(configs)} 个配置文件",
+                    "configs": configs
+                }), 200
+                
+            except Exception as e:
+                logging.exception("列出配置时出错:")
+                return jsonify({"code": 1, "error": f"列出配置失败: {str(e)}"}), 500
+
+        @self.app.route('/delete_config/<config_name>', methods=['DELETE'])
+        def handle_delete_config(config_name):
+            """删除指定名称的前端配置"""
+            try:
+                config_dir = os.path.join(os.getcwd(), 'frontend_configs')
+                config_file = os.path.join(config_dir, f"{config_name}.json")
+                
+                if not os.path.exists(config_file):
+                    return jsonify({"code": 1, "error": f"配置文件不存在: {config_name}"}), 404
+                
+                os.remove(config_file)
+                
+                logging.info(f"配置已删除: {config_file}")
+                
+                return jsonify({
+                    "code": 0,
+                    "status": "配置删除成功",
+                    "config_name": config_name
+                }), 200
+                
+            except Exception as e:
+                logging.exception("删除配置时出错:")
+                return jsonify({"code": 1, "error": f"删除配置失败: {str(e)}"}), 500
+            
+
+    def run_server(self, host='0.0.0.0', port=1235):  # 修改端口为1235
+        """启动HTTP服务器。"""
+        logging.info(f"开启HTTP服务器在 http://{host}:{port}/")
+        # 启用CORS支持，设置线程模式
+        self.app.run(host=host, port=port, debug=False, threaded=True)
+
+
+def main():
+    rclpy.init()
+    
+    # 创建ROS节点和服务器
+    navigator_server = CoverageNavigatorServer()
+    # navigator_server.startup()
+    
+    # Create executor for thread-safe ROS operations
+    from rclpy.executors import MultiThreadedExecutor
+    executor = MultiThreadedExecutor()
+    executor.add_node(navigator_server)
+    
+    # 在单独的线程中处理ROS循环，使用MultiThreadedExecutor
+    ros_thread = threading.Thread(target=executor.spin)
+    ros_thread.daemon = True
+    ros_thread.start()
+    
+    # 启动HTTP服务器(在主线程中)
+    try:
+        navigator_server.run_server()
+    except KeyboardInterrupt:
+        logging.info("服务器正在关闭...")
+    finally:
+        executor.shutdown()
+        navigator_server.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == '__main__':
+    main()

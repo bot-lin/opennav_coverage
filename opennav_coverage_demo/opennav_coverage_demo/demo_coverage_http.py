@@ -1562,6 +1562,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
 
                 # Update move_forward.xml with robot_op_width before generating coverage path
                 robot_op_width = data.get('robot_op_width', 1.0)
+                if robot_op_width <= 0:
+                    return jsonify({"code": 1,"error": "'robot_op_width'必须大于0"}), 400
                 self.update_move_forward_xml(robot_op_width)
                 self.current_robot_op_width = robot_op_width
 
