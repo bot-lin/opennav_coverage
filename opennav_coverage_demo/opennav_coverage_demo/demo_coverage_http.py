@@ -880,7 +880,7 @@ class CoverageNavigatorTester(Node):
                         wait_at_first_waypoint=False, 
                         path_planner='straight', 
                         default_precise_xy=0.05, 
-                        inflation_radius=0.1,
+                        inflation_radius=0.7,
                         allow_reverse_to_first_waypoint=False,
                         task_name="default_task",
                         map_id=0):  
@@ -988,7 +988,7 @@ class CoverageNavigatorTester(Node):
                     'actions': actions,
                     'is_reverse': False,
                     'allow_reverse': allow_reverse,
-                    'inflation_radius': 0.7,
+                    'inflation_radius': inflation_radius,
                     'uid': f'wp_{index}',
                 }
                 ros_data['wps'].append(wp)
@@ -1643,7 +1643,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             path_planner = data.get('path_planner', 'straight')
             precise_xy = data.get('precise_xy', 0.08)
             task_name = data.get('task_name', 'coverage_task')
-            inflation_radius = data.get('inflation_radius', 0.1)
+            inflation_radius = data.get('inflation_radius', 0.7)
             allow_reverse_to_first_waypoint = data.get('allow_reverse_to_first_waypoint', False)
             map_id = data.get('map_id', 0)
             if map_id == 0:
