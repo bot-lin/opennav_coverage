@@ -876,6 +876,97 @@ class CoverageNavigatorTester(Node):
     def destroy_node(self):
         super().destroy_node()
 
+    def format_rotation_degrees(self, degrees):
+        if math.isclose(degrees, round(degrees), abs_tol=1e-9):
+            return str(int(round(degrees)))
+        return f"{degrees:.6f}".rstrip('0').rstrip('.').replace('.', 'p')
+
+    def get_rotation_action_name(self, direction, degrees, check_collision=False):
+        action_name = f"rotate_{direction}{self.format_rotation_degrees(degrees)}"
+        if check_collision:
+            action_name += "_check_collision"
+        return action_name
+
+    def get_rotation_template_action_name(self, direction, check_collision=False):
+        action_name = f"rotate_{direction}90"
+        if check_collision:
+            action_name += "_check_collision"
+        return action_name
+
+    def format_rotation_value(self, degrees, use_radians=False):
+        value = math.radians(degrees) if use_radians else degrees
+        if math.isclose(value, round(value), abs_tol=1e-9):
+            return str(int(round(value)))
+        return f"{value:.6f}".rstrip('0').rstrip('.')
+
+    def replace_rotation_param(self, content, degrees):
+        pattern = re.compile(
+            r'(?P<prefix>\b(?:target_angle|rotate_angle|angle|theta|yaw|'
+            r'angle_deg|degree|degrees|deg|angle_rad|radian|radians)'
+            r'["\']?\s*[:=]\s*["\']?)'
+            r'(?P<value>[+-]?[0-9]*\.?[0-9]+)'
+        )
+
+        def replacement(match):
+            prefix = match.group('prefix')
+            key = re.search(r'[A-Za-z_]+', prefix).group(0).lower()
+            old_value = float(match.group('value'))
+            sign = -1.0 if old_value < 0 else 1.0
+            use_radians = (
+                'rad' in key or
+                key in ['theta', 'yaw'] or
+                ('angle' in key and abs(old_value) <= (2.0 * math.pi + 0.001))
+            )
+            return f"{prefix}{self.format_rotation_value(sign * degrees, use_radians)}"
+
+        updated_content, count = pattern.subn(replacement, content)
+        return updated_content, count
+
+    def ensure_rotation_action_xml(self, action_name, template_action_name, degrees):
+        if action_name == template_action_name:
+            return True, None
+
+        actions_dir = "/data/actions"
+        action_path = os.path.join(actions_dir, f"{action_name}.xml")
+        template_path = os.path.join(actions_dir, f"{template_action_name}.xml")
+
+        try:
+            source_path = template_path
+            if not os.path.exists(source_path):
+                if os.path.exists(action_path):
+                    source_path = action_path
+                else:
+                    error = f"Rotation action template not found: {template_path}"
+                    self.get_logger().error(error)
+                    return False, error
+
+            with open(source_path, 'r') as f:
+                content = f.read()
+
+            content = content.replace(template_action_name, action_name)
+            updated_content, replacements = self.replace_rotation_param(
+                content, degrees)
+            if replacements == 0:
+                error = (
+                    f"No rotation angle parameter found in {source_path}; "
+                    f"cannot generate {action_path}"
+                )
+                self.get_logger().error(error)
+                return False, error
+
+            with open(action_path, 'w') as f:
+                f.write(updated_content)
+
+            self.get_logger().info(
+                f"Updated {action_path} from {source_path} with rotation: "
+                f"{degrees} degrees")
+            return True, None
+
+        except Exception as e:
+            error = f"Failed to update {action_path}: {str(e)}"
+            self.get_logger().error(error)
+            return False, error
+
     def sendTaskRequest(self, waypoints, 
                         wait_at_first_waypoint=False, 
                         path_planner='straight', 
@@ -883,7 +974,8 @@ class CoverageNavigatorTester(Node):
                         inflation_radius=0.7,
                         allow_reverse_to_first_waypoint=False,
                         task_name="default_task",
-                        map_id=0):  
+                        map_id=0,
+                        additional_rotation=0.0):  
         flask_ros_url = 'http://127.0.0.1:1233'
         ros_data = {
             "wps": [],
@@ -897,6 +989,7 @@ class CoverageNavigatorTester(Node):
             "map_id": map_id
             }
         index = 0
+        prepared_rotation_actions = set()
         for waypoint in waypoints:
             # Only process first waypoint (index 0) and odd-indexed waypoints (1, 3, 5, ...)
             if index == 0 or index % 2 == 1:
@@ -929,21 +1022,44 @@ class CoverageNavigatorTester(Node):
 
                     # If cross_product > 0: next waypoint is to the left (counter-clockwise)
                     # If cross_product < 0: next waypoint is to the right (clockwise)
-                    rotate_action = None
-                    rotate_action2 = None
+                    turn_direction = None
                     if cross_product > 0:  # Next waypoint is to the left
-                        # Rotate 90 degrees to the left (counter-clockwise)
-                        rotate_action = 'rotate_left90'
-                        rotate_action2 = 'rotate_left90_check_collision'
-
+                        turn_direction = 'left'
                     else:  # Next waypoint is to the right
-                        # Rotate 90 degrees to the right (clockwise)
-                        rotate_action = 'rotate_right90'
-                        rotate_action2 = 'rotate_right90_check_collision'
+                        turn_direction = 'right'
 
+                    rotate_action = self.get_rotation_action_name(
+                        turn_direction, 90.0 + additional_rotation)
+                    rotate_template = self.get_rotation_template_action_name(
+                        turn_direction)
+                    if rotate_action not in prepared_rotation_actions:
+                        success, error = self.ensure_rotation_action_xml(
+                            rotate_action, rotate_template,
+                            90.0 + additional_rotation)
+                        if not success:
+                            return False, error
+                        prepared_rotation_actions.add(rotate_action)
+
+                    rotate_action2 = self.get_rotation_action_name(
+                        turn_direction, 90.0, check_collision=True)
                     actions.append({
                         'name': rotate_action,
                     })
+                    if additional_rotation > 0:
+                        back_direction = 'right' if turn_direction == 'left' else 'left'
+                        back_action = self.get_rotation_action_name(
+                            back_direction, additional_rotation)
+                        back_template = self.get_rotation_template_action_name(
+                            back_direction)
+                        if back_action not in prepared_rotation_actions:
+                            success, error = self.ensure_rotation_action_xml(
+                                back_action, back_template, additional_rotation)
+                            if not success:
+                                return False, error
+                            prepared_rotation_actions.add(back_action)
+                        actions.append({
+                            'name': back_action,
+                        })
                     # Add forward movement action (0.5m)
                     actions.append({
                         'name': 'move_forward',
@@ -1645,6 +1761,21 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
             task_name = data.get('task_name', 'coverage_task')
             inflation_radius = data.get('inflation_radius', 0.7)
             allow_reverse_to_first_waypoint = data.get('allow_reverse_to_first_waypoint', False)
+            additional_rotation = data.get(
+                'additional_rotation',
+                data.get('additional_rotation_degrees', 0.0))
+            try:
+                additional_rotation = float(additional_rotation)
+            except (TypeError, ValueError):
+                return jsonify({
+                    "code": 1,
+                    "error": "'additional_rotation'必须是数字"
+                }), 400
+            if not math.isfinite(additional_rotation) or additional_rotation < 0:
+                return jsonify({
+                    "code": 1,
+                    "error": "'additional_rotation'必须是非负数字"
+                }), 400
             map_id = data.get('map_id', 0)
             if map_id == 0:
                 return jsonify({
@@ -1664,7 +1795,8 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                                           inflation_radius=inflation_radius,
                                           allow_reverse_to_first_waypoint=allow_reverse_to_first_waypoint,
                                           task_name=task_name,
-                                          map_id=map_id)
+                                          map_id=map_id,
+                                          additional_rotation=additional_rotation)
             if not result:
                 return jsonify({
                     "code": 1,

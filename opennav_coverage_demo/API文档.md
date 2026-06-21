@@ -175,6 +175,7 @@
 | `path_planner` | String | ❌ | 路径规划器类型 | `straight` |
 | `precise_xy` | Number | ❌ | XY精度要求（米） | `0.1` |
 | `inflation_radius` | Number | ❌ | 膨胀半径（米） | `0.1` |
+| `additional_rotation` | Number | ❌ | 额外旋转角度（度）。例如`20`会生成/更新对应`/data/actions/rotate_*`动作XML，先执行`110°`转向，再反向补偿`20°`，然后前进 | `0` |
 
 #### 请求示例
 
@@ -183,7 +184,8 @@
   "wait_at_first_waypoint": true,
   "path_planner": "straight",
   "precise_xy": 0.05,
-  "inflation_radius": 0.15
+  "inflation_radius": 0.15,
+  "additional_rotation": 20
 }
 ```
 
