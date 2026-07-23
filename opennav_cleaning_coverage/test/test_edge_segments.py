@@ -37,3 +37,34 @@ def test_edges_are_sparse_deterministic_segments_with_outer_boundary_first():
     assert (segments[0].end.x, segments[0].end.y) == pytest.approx((10.0, 0.0))
     assert segments[0].start.yaw == pytest.approx(0.0)
     assert segments[4].start.yaw == pytest.approx(math.pi / 2.0)
+
+
+def test_edges_ignore_repeated_costmap_boundary_vertices():
+    polygon = Polygon(
+        [(0.0, 0.0), (4.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0)]
+    )
+
+    segments = EdgeSegmentGenerator().generate(polygon, component_index=0)
+
+    assert len(segments) == 4
+    assert all(
+        (segment.start.x, segment.start.y)
+        != (segment.end.x, segment.end.y)
+        for segment in segments
+    )
+
+
+def test_edges_ignore_submicrometre_costmap_boundary_artifacts():
+    polygon = Polygon(
+        [
+            (0.0, 0.0),
+            (4.0, 0.0),
+            (4.0, 0.0000005),
+            (4.0, 4.0),
+            (0.0, 4.0),
+        ]
+    )
+
+    segments = EdgeSegmentGenerator().generate(polygon, component_index=0)
+
+    assert len(segments) == 4

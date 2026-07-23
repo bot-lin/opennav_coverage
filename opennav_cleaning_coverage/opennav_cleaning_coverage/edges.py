@@ -14,7 +14,7 @@
 
 """Deterministic sparse edge-cleaning segment generation."""
 
-from math import atan2
+from math import atan2, hypot
 from typing import List
 
 from shapely.geometry import Polygon
@@ -42,6 +42,8 @@ class EdgeSegmentGenerator:
             coordinates = self._rotate_to_deterministic_start(list(ring.coords)[:-1])
             for index, start in enumerate(coordinates):
                 end = coordinates[(index + 1) % len(coordinates)]
+                if hypot(end[0] - start[0], end[1] - start[1]) <= 1.0e-6:
+                    continue
                 yaw = atan2(end[1] - start[1], end[0] - start[0])
                 segments.append(
                     CleaningSegment(
