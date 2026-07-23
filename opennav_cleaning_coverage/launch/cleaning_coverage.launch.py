@@ -57,6 +57,9 @@ def generate_launch_description():
                 parameters=[
                     {
                         "autostart": autostart,
+                        # rclpy.lifecycle.LifecycleNode does not create the
+                        # Nav2 bond expected by the lifecycle manager.
+                        "bond_timeout": 0.0,
                         "node_names": ["cleaning_coverage_server"],
                     }
                 ],

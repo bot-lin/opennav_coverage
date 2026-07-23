@@ -570,4 +570,5 @@ def main(args=None):
     finally:
         executor.remove_node(node)
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
