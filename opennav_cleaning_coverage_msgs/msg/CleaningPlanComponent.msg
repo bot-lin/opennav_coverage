@@ -1,0 +1,8 @@
+uint32 component_index
+geometry_msgs/PolygonStamped outer_boundary
+geometry_msgs/PolygonStamped[] exclusions
+opennav_cleaning_coverage_msgs/CleaningSegment[] edge_segments
+opennav_cleaning_coverage_msgs/CleaningSegment[] coverage_segments
+opennav_cleaning_coverage_msgs/CleaningSegment[] transition_segments
+geometry_msgs/PoseStamped[] ordered_waypoints
+float64 coverage_ratio

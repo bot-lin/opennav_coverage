@@ -1,0 +1,68 @@
+# Geometry sources.
+uint8 USER=0
+uint8 COSTMAP=1
+uint8 FUSED=2
+
+# Swath-angle selection.
+uint8 FIXED=0
+uint8 AUTO=1
+
+# Automatic-angle objectives.
+uint8 MIN_TURNS=0
+uint8 MIN_LENGTH=1
+uint8 BALANCED=2
+
+# Polygon decomposition.
+uint8 DECOMPOSITION_AUTO=0
+uint8 DECOMPOSITION_NONE=1
+uint8 DECOMPOSITION_BOUSTROPHEDON=2
+uint8 DECOMPOSITION_TRAPEZOIDAL=3
+
+uint8 geometry_mode
+geometry_msgs/PolygonStamped roi
+geometry_msgs/PolygonStamped[] exclusions
+float64 op_width
+uint8 angle_mode
+float64 fixed_angle_deg
+# Values <= 0 use the server default.
+float64 angle_step_deg
+uint8 optimization_objective
+uint8 decomposition_mode
+float64 headland_width
+uint8 max_traversable_cost
+# Values <= 0 use the server default.
+float64 min_coverage_ratio
+---
+uint16 SUCCESS=0
+uint16 INVALID_GEOMETRY=1
+uint16 INVALID_PARAMETERS=2
+uint16 TF_UNAVAILABLE=3
+uint16 COSTMAP_UNAVAILABLE=4
+uint16 NO_CLEANABLE_AREA=5
+uint16 PLANNING_FAILED=6
+uint16 COVERAGE_BELOW_THRESHOLD=7
+uint16 TIMEOUT=8
+uint16 FOOTPRINT_UNAVAILABLE=9
+uint16 CANCELED=10
+uint16 INTERNAL_ERROR=255
+
+uint16 error_code
+string message
+opennav_cleaning_coverage_msgs/CleaningPlanComponent[] components
+float64 coverage_ratio
+geometry_msgs/PolygonStamped[] uncovered_regions
+string debug_image_path
+builtin_interfaces/Duration planning_time
+---
+uint8 VALIDATING=0
+uint8 ACQUIRING_COSTMAP=1
+uint8 EXTRACTING_GEOMETRY=2
+uint8 DECOMPOSING=3
+uint8 GENERATING_SWATHS=4
+uint8 ORDERING=5
+uint8 VALIDATING_RESULT=6
+uint8 WRITING_ARTIFACT=7
+
+uint8 stage
+float32 progress
+string message

@@ -1,0 +1,25 @@
+# Copyright 2026 Open Navigation LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+
+cleaning_coverage_server:
+  ros__parameters:
+    action_name: /compute_cleaning_coverage
+    planning_frame: map
+    costmap_service: /global_costmap/get_costmap
+    footprint_topic: /global_costmap/published_footprint
+    robot_base_frame: base_link
+    tf_timeout_sec: 0.5
+    costmap_timeout_sec: 5.0
+    planning_timeout_sec: 30.0
+    default_angle_step_deg: 5.0
+    default_min_coverage_ratio: 0.98
+    geometry_epsilon: 1.0e-6
+    # A negative value derives the threshold from op_width and costmap resolution.
+    min_obstacle_area: -1.0
+    min_cleanable_area: -1.0
+    debug_output_directory: /tmp/opennav_cleaning_coverage
+    debug_max_files: 20
+    debug_max_total_mib: 100.0
+    debug_max_dimension: 1600
+    publish_markers: false
