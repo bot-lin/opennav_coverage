@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from time import monotonic
+
 import pytest
 
 from opennav_cleaning_coverage.models import (
@@ -59,3 +61,25 @@ def test_swept_footprint_rejects_lethal_cell_before_centerline_reaches_it():
         checker.validate([segment(3.9)])
 
     assert error.value.code == "PLANNING_FAILED"
+
+
+def test_large_uniform_unknown_costmap_is_indexed_with_bounded_latency():
+    width = 400
+    height = 400
+    costmap = GridMap(
+        width=width,
+        height=height,
+        resolution=0.05,
+        origin_x=0.0,
+        origin_y=0.0,
+        origin_yaw=0.0,
+        data=(255,) * (width * height),
+    )
+    footprint = Polygon2D.from_tuples(
+        [(-0.2, -0.2), (0.2, -0.2), (0.2, 0.2), (-0.2, 0.2)])
+
+    started = monotonic()
+    FootprintCollisionChecker(footprint, costmap)
+    elapsed = monotonic() - started
+
+    assert elapsed < 1.0

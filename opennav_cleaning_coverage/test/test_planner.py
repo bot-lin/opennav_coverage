@@ -99,6 +99,42 @@ def test_planner_honors_cancellation_before_expensive_generation():
     assert error.value.code == "CANCELED"
 
 
+def test_planner_honors_cancellation_during_costmap_preprocessing():
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples([]),
+        geometry_mode=GeometryMode.COSTMAP,
+        op_width=1.0,
+    )
+    costmap = GridMap(
+        width=100,
+        height=100,
+        resolution=0.05,
+        origin_x=0.0,
+        origin_y=0.0,
+        origin_yaw=0.0,
+        data=(255,) * 10000,
+    )
+    footprint = Polygon2D.from_tuples(
+        [(-0.2, -0.2), (0.2, -0.2), (0.2, 0.2), (-0.2, 0.2)])
+    checks = 0
+
+    def cancel_after_preprocessing_starts():
+        nonlocal checks
+        checks += 1
+        return checks >= 3
+
+    with pytest.raises(PlanningError) as error:
+        CleaningCoveragePlanner().plan(
+            request,
+            costmap=costmap,
+            footprint=footprint,
+            cancel_check=cancel_after_preprocessing_starts,
+        )
+
+    assert error.value.code == "CANCELED"
+    assert checks == 3
+
+
 def test_planner_returns_transition_pair_between_disconnected_components():
     request = PlanRequest(
         roi=Polygon2D.from_tuples(

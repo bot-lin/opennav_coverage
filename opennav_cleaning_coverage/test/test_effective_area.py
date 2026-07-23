@@ -65,6 +65,29 @@ def test_costmap_geometry_splits_components_at_blocked_cells():
     assert [component.area for component in components] == pytest.approx([4.0, 2.0])
 
 
+def test_costmap_geometry_derives_roi_from_map_bounds_when_goal_roi_is_empty():
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples([]),
+        geometry_mode=GeometryMode.COSTMAP,
+        op_width=1.0,
+    )
+    costmap = GridMap(
+        width=4,
+        height=2,
+        resolution=1.0,
+        origin_x=2.0,
+        origin_y=-3.0,
+        origin_yaw=0.0,
+        data=(0,) * 8,
+    )
+
+    components = EffectiveAreaBuilder().build(request, costmap)
+
+    assert len(components) == 1
+    assert components[0].area == pytest.approx(8.0)
+    assert components[0].bounds == pytest.approx((2.0, -3.0, 6.0, -1.0))
+
+
 def test_costmap_filters_known_obstacle_components_below_configured_area():
     request = PlanRequest(
         roi=square(0.0, 0.0, 3.0, 3.0),

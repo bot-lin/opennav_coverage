@@ -66,6 +66,12 @@ class CleaningCoveragePlanner:
         started = monotonic()
         deadline = deadline or started + self._infrastructure.planning_timeout_sec
         self._validate_request(request)
+
+        def checkpoint():
+            self._checkpoint(cancel_check, deadline)
+
+        checkpoint()
+        self._report(feedback, "EXTRACTING_GEOMETRY", 0.1)
         collision_checker = None
         if footprint is not None:
             if costmap is not None:
@@ -73,12 +79,13 @@ class CleaningCoveragePlanner:
                     footprint,
                     costmap,
                     epsilon=self._infrastructure.geometry_epsilon,
+                    checkpoint=checkpoint,
                 )
             else:
                 self._validate_footprint(footprint)
-        self._checkpoint(cancel_check, deadline)
-        self._report(feedback, "EXTRACTING_GEOMETRY", 0.1)
-        polygons = self._area_builder.build(request, costmap)
+        checkpoint()
+        polygons = self._area_builder.build(
+            request, costmap, checkpoint=checkpoint)
 
         components = []
         cleaned_geometries = []

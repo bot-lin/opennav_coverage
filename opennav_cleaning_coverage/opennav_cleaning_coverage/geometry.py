@@ -23,6 +23,7 @@ from shapely.geometry.polygon import orient
 from shapely.ops import unary_union
 from shapely.validation import explain_validity
 
+from .grid_geometry import union_selected_cells
 from .models import GeometryMode, GridMap, PlanRequest, PlanningError, Polygon2D
 
 
@@ -39,11 +40,20 @@ class EffectiveAreaBuilder:
         self._min_obstacle_area = min_obstacle_area
         self._min_cleanable_area = min_cleanable_area
 
-    def build(self, request: PlanRequest, costmap=None) -> List[Polygon]:
+    def build(
+        self, request: PlanRequest, costmap=None, checkpoint=None
+    ) -> List[Polygon]:
         if request.op_width <= 0.0 or not isfinite(request.op_width):
             raise PlanningError("INVALID_PARAMETERS", "op_width must be finite and positive")
 
-        roi = self._to_strict_polygon(request.roi, "ROI")
+        roi = (
+            None
+            if (
+                request.geometry_mode == GeometryMode.COSTMAP
+                and not request.roi.vertices
+            )
+            else self._to_strict_polygon(request.roi, "ROI")
+        )
         exclusions = [
             self._to_strict_polygon(value, f"exclusion {index}")
             for index, value in enumerate(request.exclusions)
@@ -80,8 +90,19 @@ class EffectiveAreaBuilder:
             effective = roi
         else:
             traversable = self._costmap_traversable(
-                costmap, request.max_traversable_cost, request.op_width)
-            effective = roi.intersection(traversable)
+                costmap,
+                request.max_traversable_cost,
+                request.op_width,
+                checkpoint=checkpoint,
+            )
+            effective = (
+                traversable
+                if (
+                    request.geometry_mode == GeometryMode.COSTMAP
+                    and roi is None
+                )
+                else roi.intersection(traversable)
+            )
         if exclusions:
             effective = effective.difference(unary_union(exclusions))
         polygons = self._sorted_polygons(effective)
@@ -106,7 +127,11 @@ class EffectiveAreaBuilder:
         return polygons
 
     def _costmap_traversable(
-        self, grid: GridMap, max_cost: int, op_width: float
+        self,
+        grid: GridMap,
+        max_cost: int,
+        op_width: float,
+        checkpoint=None,
     ):
         if grid.width <= 0 or grid.height <= 0 or grid.resolution <= 0.0:
             raise PlanningError("COSTMAP_UNAVAILABLE", "costmap metadata is invalid")
@@ -118,12 +143,16 @@ class EffectiveAreaBuilder:
                 "max_traversable_cost must be below the unknown cost value",
             )
 
-        known_obstacles = self._costmap_cell_union(
+        known_obstacles = union_selected_cells(
             grid,
             lambda value: value != grid.unknown_value and value > max_cost,
+            checkpoint=checkpoint,
         )
-        unknown = self._costmap_cell_union(
-            grid, lambda value: value == grid.unknown_value)
+        unknown = union_selected_cells(
+            grid,
+            lambda value: value == grid.unknown_value,
+            checkpoint=checkpoint,
+        )
         minimum_area = self._min_obstacle_area
         if minimum_area is None:
             minimum_area = max(
@@ -153,31 +182,6 @@ class EffectiveAreaBuilder:
         )
         traversable = map_bounds.difference(blocked)
         return self._transform_costmap_geometry(traversable, grid)
-
-    def _costmap_cell_union(self, grid, predicate):
-        runs = []
-        for row in range(grid.height):
-            start = None
-            for column in range(grid.width + 1):
-                selected = False
-                if column < grid.width:
-                    value = grid.data[row * grid.width + column]
-                    selected = predicate(value)
-                if selected and start is None:
-                    start = column
-                elif not selected and start is not None:
-                    runs.append(
-                        box(
-                            start * grid.resolution,
-                            row * grid.resolution,
-                            column * grid.resolution,
-                            (row + 1) * grid.resolution,
-                        )
-                    )
-                    start = None
-        if not runs:
-            return GeometryCollection()
-        return unary_union(runs)
 
     @staticmethod
     def _transform_costmap_geometry(geometry, grid):

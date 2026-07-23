@@ -17,9 +17,10 @@
 from math import cos, sin
 
 from shapely import affinity
-from shapely.geometry import GeometryCollection, Point, Polygon, box
+from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
 
+from .grid_geometry import union_selected_cells
 from .models import PlanningError
 
 
@@ -32,6 +33,7 @@ class FootprintCollisionChecker:
         costmap,
         lethal_cost: int = 254,
         epsilon: float = 1.0e-6,
+        checkpoint=None,
     ) -> None:
         self._epsilon = epsilon
         self._coordinates = [
@@ -57,8 +59,11 @@ class FootprintCollisionChecker:
             ),
             costmap,
         )
-        hard_cells = self._selected_cells(
-            costmap, lambda value: value >= lethal_cost)
+        hard_cells = union_selected_cells(
+            costmap,
+            lambda value: value >= lethal_cost,
+            checkpoint=checkpoint,
+        )
         self._hard_obstacles = self._transform(hard_cells, costmap)
 
     def validate(self, segments) -> None:
@@ -127,23 +132,6 @@ class FootprintCollisionChecker:
                 "COSTMAP_UNAVAILABLE",
                 "costmap metadata is invalid during footprint validation",
             )
-
-    @staticmethod
-    def _selected_cells(costmap, predicate):
-        cells = []
-        for row in range(costmap.height):
-            for column in range(costmap.width):
-                value = costmap.data[row * costmap.width + column]
-                if predicate(value):
-                    cells.append(
-                        box(
-                            column * costmap.resolution,
-                            row * costmap.resolution,
-                            (column + 1) * costmap.resolution,
-                            (row + 1) * costmap.resolution,
-                        )
-                    )
-        return unary_union(cells) if cells else GeometryCollection()
 
     @staticmethod
     def _transform(geometry, costmap):
