@@ -73,6 +73,7 @@ class CleaningCoveragePlanner:
         checkpoint()
         self._report(feedback, "EXTRACTING_GEOMETRY", 0.1)
         collision_checker = None
+        footprint_clearance = 0.0
         if footprint is not None:
             if costmap is not None:
                 collision_checker = FootprintCollisionChecker(
@@ -81,14 +82,24 @@ class CleaningCoveragePlanner:
                     epsilon=self._infrastructure.geometry_epsilon,
                     checkpoint=checkpoint,
                 )
+                footprint_clearance = max(
+                    hypot(point.x, point.y)
+                    for point in footprint.vertices
+                ) + 0.5 * costmap.resolution
             else:
                 self._validate_footprint(footprint)
         checkpoint()
         polygons = self._area_builder.build(
-            request, costmap, checkpoint=checkpoint)
+            request,
+            costmap,
+            checkpoint=checkpoint,
+            footprint_clearance=footprint_clearance,
+        )
 
         components = []
         cleaned_geometries = []
+        skipped_edge_count = 0
+        skipped_coverage_count = 0
         total_area = sum(polygon.area for polygon in polygons)
         total_cleaned_area = 0.0
         for component_index, polygon in enumerate(polygons):
@@ -107,7 +118,15 @@ class CleaningCoveragePlanner:
             cleaning_sequence = edges + coverage
             self._validate_cleaning_segments(cleaning_sequence, polygon)
             if collision_checker is not None:
-                collision_checker.validate(cleaning_sequence)
+                safe_edges = collision_checker.filter_safe(edges)
+                skipped_edge_count += len(edges) - len(safe_edges)
+                edges = safe_edges
+                safe_coverage = collision_checker.filter_safe(coverage)
+                skipped_coverage_count += (
+                    len(coverage) - len(safe_coverage)
+                )
+                coverage = safe_coverage
+                cleaning_sequence = edges + coverage
             transitions = self._transitions(
                 cleaning_sequence, component_index)
             ordered_poses = tuple(
@@ -150,6 +169,8 @@ class CleaningCoveragePlanner:
         result = PlanResult(
             components=tuple(components),
             coverage_ratio=coverage_ratio,
+            skipped_edge_count=skipped_edge_count,
+            skipped_coverage_count=skipped_coverage_count,
             uncovered_regions=uncovered_regions,
             planning_duration_sec=monotonic() - started,
         )

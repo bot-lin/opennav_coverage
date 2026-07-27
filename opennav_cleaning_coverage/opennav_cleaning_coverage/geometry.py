@@ -41,10 +41,19 @@ class EffectiveAreaBuilder:
         self._min_cleanable_area = min_cleanable_area
 
     def build(
-        self, request: PlanRequest, costmap=None, checkpoint=None
+        self,
+        request: PlanRequest,
+        costmap=None,
+        checkpoint=None,
+        footprint_clearance: float = 0.0,
     ) -> List[Polygon]:
         if request.op_width <= 0.0 or not isfinite(request.op_width):
             raise PlanningError("INVALID_PARAMETERS", "op_width must be finite and positive")
+        if not isfinite(footprint_clearance) or footprint_clearance < 0.0:
+            raise PlanningError(
+                "INVALID_PARAMETERS",
+                "footprint_clearance must be finite and nonnegative",
+            )
 
         roi = (
             None
@@ -94,6 +103,7 @@ class EffectiveAreaBuilder:
                 request.max_traversable_cost,
                 request.op_width,
                 checkpoint=checkpoint,
+                footprint_clearance=footprint_clearance,
             )
             effective = (
                 traversable
@@ -132,6 +142,7 @@ class EffectiveAreaBuilder:
         max_cost: int,
         op_width: float,
         checkpoint=None,
+        footprint_clearance: float = 0.0,
     ):
         if grid.width <= 0 or grid.height <= 0 or grid.resolution <= 0.0:
             raise PlanningError("COSTMAP_UNAVAILABLE", "costmap metadata is invalid")
@@ -167,9 +178,12 @@ class EffectiveAreaBuilder:
         ]
         blocked_values = retained
         if not unknown.is_empty:
-            blocked_values.append(
-                unknown.simplify(
-                    0.5 * grid.resolution, preserve_topology=True))
+            unknown = unknown.simplify(
+                0.5 * grid.resolution, preserve_topology=True)
+            if footprint_clearance > 0.0:
+                unknown = unknown.buffer(
+                    footprint_clearance + self._epsilon)
+            blocked_values.append(unknown)
         blocked = (
             unary_union(blocked_values) if blocked_values else GeometryCollection()
         )
@@ -180,6 +194,9 @@ class EffectiveAreaBuilder:
             grid.width * grid.resolution,
             grid.height * grid.resolution,
         )
+        if footprint_clearance > 0.0:
+            map_bounds = map_bounds.buffer(
+                -(footprint_clearance + self._epsilon))
         traversable = map_bounds.difference(blocked)
         return self._transform_costmap_geometry(traversable, grid)
 

@@ -63,6 +63,29 @@ def test_swept_footprint_rejects_lethal_cell_before_centerline_reaches_it():
     assert error.value.code == "PLANNING_FAILED"
 
 
+def test_filter_safe_omits_only_colliding_segments():
+    costmap = GridMap(
+        width=6,
+        height=4,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        origin_yaw=0.0,
+        data=tuple(
+            254 if (column, row) == (4, 1) else 0
+            for row in range(4)
+            for column in range(6)
+        ),
+    )
+    footprint = Polygon2D.from_tuples(
+        [(-0.2, -0.2), (0.2, -0.2), (0.2, 0.2), (-0.2, 0.2)])
+    checker = FootprintCollisionChecker(footprint, costmap)
+    safe = segment(3.6)
+    colliding = segment(3.9)
+
+    assert checker.filter_safe([safe, colliding]) == [safe]
+
+
 def test_large_uniform_unknown_costmap_is_indexed_with_bounded_latency():
     width = 400
     height = 400

@@ -195,6 +195,7 @@ class CleaningCoverageServer(LifecycleNode):
         self._artifact_writer = None
         with self._footprint_lock:
             self._latest_footprint = None
+        self.get_logger().info("cleaning coverage server cleaned up")
         return TransitionCallbackReturn.SUCCESS
 
     def _infrastructure(self):
@@ -227,13 +228,19 @@ class CleaningCoverageServer(LifecycleNode):
 
     def _goal_callback(self, _goal_request):
         with self._goal_lock:
-            if not self._active or self._goal_in_progress:
+            if not self._active:
+                self.get_logger().warning(
+                    "rejecting cleaning coverage goal: server is inactive")
+                return GoalResponse.REJECT
+            if self._goal_in_progress:
+                self.get_logger().warning(
+                    "rejecting cleaning coverage goal: another goal is active")
                 return GoalResponse.REJECT
             self._goal_in_progress = True
         return GoalResponse.ACCEPT
 
-    @staticmethod
-    def _cancel_callback(_goal_handle):
+    def _cancel_callback(self, _goal_handle):
+        self.get_logger().info("cleaning coverage goal cancellation requested")
         return CancelResponse.ACCEPT
 
     def _footprint_callback(self, message):
@@ -245,22 +252,54 @@ class CleaningCoverageServer(LifecycleNode):
         deadline = started + self.get_parameter("planning_timeout_sec").value
         result_message = ComputeCleaningCoverage.Result()
         try:
+            raw_request = goal_handle.request
+            self.get_logger().info(
+                "cleaning coverage goal received: "
+                f"geometry_mode={raw_request.geometry_mode} "
+                f"roi_frame={raw_request.roi.header.frame_id or '<default>'} "
+                f"roi_vertices={len(raw_request.roi.polygon.points)} "
+                f"exclusions={len(raw_request.exclusions)}"
+            )
             request = goal_to_request(
-                goal_handle.request,
+                raw_request,
                 self._polygon_to_planning_frame,
                 default_angle_step_deg=self.get_parameter(
                     "default_angle_step_deg").value,
                 default_min_coverage_ratio=self.get_parameter(
                     "default_min_coverage_ratio").value,
             )
+            self.get_logger().info(
+                "cleaning coverage parameters: "
+                f"op_width={request.op_width:.3f} "
+                f"angle_mode={int(request.angle_mode)} "
+                f"fixed_angle_deg={request.fixed_angle_deg:.3f} "
+                f"angle_step_deg={request.angle_step_deg:.3f} "
+                f"objective={int(request.objective)} "
+                f"decomposition={int(request.decomposition)} "
+                f"headland_width={request.headland_width:.3f} "
+                f"max_traversable_cost={request.max_traversable_cost} "
+                f"min_coverage_ratio={request.min_coverage_ratio:.6f}"
+            )
             footprint = self._current_footprint()
+            self.get_logger().debug(
+                f"using Nav2 footprint with {len(footprint.vertices)} vertices")
             costmap = None
             if request.geometry_mode != GeometryMode.USER:
                 self._publish_feedback(
                     goal_handle, "ACQUIRING_COSTMAP", 0.05)
                 costmap = self._request_costmap(goal_handle, deadline)
+                self.get_logger().info(
+                    "global costmap acquired: "
+                    f"size={costmap.width}x{costmap.height} "
+                    f"resolution={costmap.resolution:.4f} "
+                    f"origin=({costmap.origin_x:.3f},"
+                    f"{costmap.origin_y:.3f},"
+                    f"{costmap.origin_yaw:.3f})"
+                )
 
             def feedback(stage, progress):
+                self.get_logger().debug(
+                    f"planning stage={stage} progress={progress:.3f}")
                 self._publish_feedback(goal_handle, stage, progress)
 
             result = self._planner.plan(
@@ -274,6 +313,9 @@ class CleaningCoverageServer(LifecycleNode):
             self._checkpoint(goal_handle, deadline)
             self._publish_feedback(goal_handle, "WRITING_ARTIFACT", 0.95)
             image_path = self._artifact_writer.write(result)
+            edge_image_path, coverage_image_path = (
+                self._artifact_writer.separated_paths(image_path)
+            )
             result = replace(
                 result,
                 debug_image_path=image_path,
@@ -284,8 +326,46 @@ class CleaningCoverageServer(LifecycleNode):
             goal_handle.succeed()
             result_message.error_code = result_message.SUCCESS
             result_message.message = "cleaning coverage plan computed"
+            if result.skipped_edge_count:
+                result_message.message += (
+                    f"; skipped {result.skipped_edge_count} unsafe edge "
+                    "segments"
+                )
+            if result.skipped_coverage_count:
+                result_message.message += (
+                    f"; skipped {result.skipped_coverage_count} unsafe "
+                    "coverage segments"
+                )
+            edge_count = sum(
+                len(component.edge_segments)
+                for component in result.components
+            )
+            coverage_count = sum(
+                len(component.coverage_segments)
+                for component in result.components
+            )
+            transition_count = sum(
+                len(component.transition_segments)
+                for component in result.components
+            )
+            self.get_logger().info(
+                "cleaning coverage goal succeeded: "
+                f"components={len(result.components)} "
+                f"edge_segments={edge_count} "
+                f"coverage_segments={coverage_count} "
+                f"transition_segments={transition_count} "
+                f"skipped_edge_segments={result.skipped_edge_count} "
+                "skipped_coverage_segments="
+                f"{result.skipped_coverage_count} "
+                f"coverage_ratio={result.coverage_ratio:.6f} "
+                f"duration_sec={result.planning_duration_sec:.3f} "
+                f"debug_image={result.debug_image_path or '<disabled>'} "
+                f"edge_image={edge_image_path} "
+                f"coverage_image={coverage_image_path}"
+            )
             return result_message
         except PlanningError as error:
+            elapsed = monotonic() - started
             partial = getattr(error, "result", None)
             if partial is not None:
                 result_message.coverage_ratio = partial.coverage_ratio
@@ -295,17 +375,32 @@ class CleaningCoverageServer(LifecycleNode):
                 ]
             result_message.error_code = self._error_code(result_message, error.code)
             result_message.message = str(error)
-            self._set_duration(result_message, monotonic() - started)
+            self._set_duration(result_message, elapsed)
             if error.code == "CANCELED" or goal_handle.is_cancel_requested:
                 goal_handle.canceled()
+                outcome = "canceled"
             else:
                 goal_handle.abort()
+                outcome = "failed"
+            self.get_logger().warning(
+                f"cleaning coverage goal {outcome}: "
+                f"code={error.code} "
+                f"message={error} "
+                f"coverage_ratio={result_message.coverage_ratio:.6f} "
+                f"duration_sec={elapsed:.3f}"
+            )
             return result_message
         except Exception as error:  # Never leak an exception through an action.
-            self.get_logger().error(f"cleaning planning failed: {error}")
+            elapsed = monotonic() - started
+            self.get_logger().error(
+                "cleaning coverage goal failed unexpectedly: "
+                f"type={type(error).__name__} "
+                f"message={error} "
+                f"duration_sec={elapsed:.3f}"
+            )
             result_message.error_code = result_message.INTERNAL_ERROR
             result_message.message = str(error)
-            self._set_duration(result_message, monotonic() - started)
+            self._set_duration(result_message, elapsed)
             goal_handle.abort()
             return result_message
         finally:

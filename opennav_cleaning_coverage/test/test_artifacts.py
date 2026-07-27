@@ -19,7 +19,7 @@ from opennav_cleaning_coverage.models import AngleMode, PlanRequest, Polygon2D
 from opennav_cleaning_coverage.planner import CleaningCoveragePlanner
 
 
-def test_artifact_writer_outputs_bounded_composite_png_and_prunes_its_own_files(
+def test_artifact_writer_outputs_separated_pngs_and_prunes_its_own_plan_sets(
     tmp_path,
 ):
     request = PlanRequest(
@@ -32,7 +32,7 @@ def test_artifact_writer_outputs_bounded_composite_png_and_prunes_its_own_files(
     result = CleaningCoveragePlanner().plan(request)
     writer = ArtifactWriter(
         directory=str(tmp_path),
-        max_files=2,
+        max_files=6,
         max_total_bytes=100 * 1024 * 1024,
         max_dimension=320,
     )
@@ -42,9 +42,17 @@ def test_artifact_writer_outputs_bounded_composite_png_and_prunes_its_own_files(
     paths = [writer.write(result) for _ in range(3)]
 
     generated = sorted(tmp_path.glob("cleaning_plan_*.png"))
-    assert len(generated) == 2
+    assert len(generated) == 6
     assert unrelated.exists()
-    assert paths[-1] == str(generated[-1]) or paths[-1] == str(generated[-2])
+    assert paths[-1] in [str(path) for path in generated]
+    edge_path, coverage_path = writer.separated_paths(paths[-1])
+    assert (tmp_path / edge_path.split("/")[-1]).exists()
+    assert (tmp_path / coverage_path.split("/")[-1]).exists()
     image = cv2.imread(paths[-1])
+    edge_image = cv2.imread(edge_path)
+    coverage_image = cv2.imread(coverage_path)
     assert image is not None
+    assert edge_image is not None
+    assert coverage_image is not None
     assert max(image.shape[:2]) <= 320
+    assert not (edge_image == coverage_image).all()

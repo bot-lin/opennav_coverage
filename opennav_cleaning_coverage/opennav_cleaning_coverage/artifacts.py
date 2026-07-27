@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Bounded composite PNG output for successful cleaning plans."""
+"""Bounded combined and per-segment PNG output for successful plans."""
 
 import os
 from pathlib import Path
@@ -27,9 +27,10 @@ from .models import PlanningError
 
 
 class ArtifactWriter:
-    """Render one composite image and retain only owned, bounded artifacts."""
+    """Render a combined image plus edge-only and coverage-only images."""
 
     _PREFIX = "cleaning_plan_"
+    _LAYERS = ("combined", "edge", "coverage")
 
     def __init__(
         self,
@@ -38,7 +39,11 @@ class ArtifactWriter:
         max_total_bytes: int = 100 * 1024 * 1024,
         max_dimension: int = 1600,
     ) -> None:
-        if max_files <= 0 or max_total_bytes <= 0 or max_dimension < 64:
+        if (
+            max_files < len(self._LAYERS)
+            or max_total_bytes <= 0
+            or max_dimension < 64
+        ):
             raise ValueError("artifact limits must be positive and usable")
         self._directory = Path(directory)
         self._max_files = max_files
@@ -49,33 +54,51 @@ class ArtifactWriter:
     def write(self, result) -> str:
         with self._lock:
             self._directory.mkdir(parents=True, exist_ok=True)
-            image, to_pixel = self._canvas(result)
-            self._draw_components(image, result, to_pixel)
-            cv2.putText(
-                image,
-                f"coverage: {result.coverage_ratio:.4f}",
-                (12, 24),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (20, 20, 20),
-                1,
-                cv2.LINE_AA,
-            )
-
             stem = f"{self._PREFIX}{time_ns()}_{uuid4().hex[:8]}"
             final_path = self._directory / f"{stem}.png"
-            temporary_path = self._directory / f".{stem}.tmp.png"
-            if not cv2.imwrite(str(temporary_path), image):
-                raise PlanningError(
-                    "INTERNAL_ERROR", "failed to encode cleaning-plan PNG")
-            os.replace(temporary_path, final_path)
+            written_paths = []
+            try:
+                for layer in self._LAYERS:
+                    image, to_pixel = self._canvas(result)
+                    self._draw_components(
+                        image, result, to_pixel, layer=layer)
+                    self._draw_label(image, result, layer)
+                    suffix = "" if layer == "combined" else f"_{layer}"
+                    layer_path = self._directory / f"{stem}{suffix}.png"
+                    temporary_path = (
+                        self._directory / f".{stem}{suffix}.tmp.png")
+                    if not cv2.imwrite(str(temporary_path), image):
+                        raise PlanningError(
+                            "INTERNAL_ERROR",
+                            f"failed to encode cleaning-plan {layer} PNG",
+                        )
+                    os.replace(temporary_path, layer_path)
+                    written_paths.append(layer_path)
+            except Exception:
+                for path in written_paths:
+                    path.unlink(missing_ok=True)
+                for temporary_path in self._directory.glob(
+                    f".{stem}*.tmp.png"
+                ):
+                    temporary_path.unlink(missing_ok=True)
+                raise
+
             self._prune()
             if not final_path.exists():
                 raise PlanningError(
                     "INTERNAL_ERROR",
-                    "artifact limits are too small for a single cleaning-plan PNG",
+                    "artifact limits are too small for one cleaning-plan PNG set",
                 )
             return str(final_path)
+
+    @staticmethod
+    def separated_paths(combined_path: str):
+        """Return the deterministic edge-only and coverage-only sidecar paths."""
+        path = Path(combined_path)
+        return (
+            str(path.with_name(f"{path.stem}_edge{path.suffix}")),
+            str(path.with_name(f"{path.stem}_coverage{path.suffix}")),
+        )
 
     def _canvas(self, result):
         coordinates = []
@@ -116,7 +139,25 @@ class ArtifactWriter:
         return np.asarray(
             [to_pixel(point.x, point.y) for point in points], dtype=np.int32)
 
-    def _draw_components(self, image, result, to_pixel):
+    @staticmethod
+    def _draw_label(image, result, layer):
+        label = {
+            "combined": "combined",
+            "edge": "edge cleaning",
+            "coverage": "coverage",
+        }[layer]
+        cv2.putText(
+            image,
+            f"{label} | coverage: {result.coverage_ratio:.4f}",
+            (12, 24),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (20, 20, 20),
+            1,
+            cv2.LINE_AA,
+        )
+
+    def _draw_components(self, image, result, to_pixel, layer="combined"):
         for component in result.components:
             outer = self._polyline(component.outer.vertices, to_pixel)
             cv2.fillPoly(image, [outer], (242, 242, 242))
@@ -126,33 +167,36 @@ class ArtifactWriter:
                 cv2.fillPoly(image, [points], (210, 210, 210))
                 cv2.polylines(
                     image, [points], True, (80, 80, 80), 2, cv2.LINE_AA)
-            for segment in component.edge_segments:
-                cv2.line(
-                    image,
-                    to_pixel(segment.start.x, segment.start.y),
-                    to_pixel(segment.end.x, segment.end.y),
-                    (220, 90, 20),
-                    2,
-                    cv2.LINE_AA,
-                )
-            for segment in component.coverage_segments:
-                cv2.line(
-                    image,
-                    to_pixel(segment.start.x, segment.start.y),
-                    to_pixel(segment.end.x, segment.end.y),
-                    (30, 160, 50),
-                    2,
-                    cv2.LINE_AA,
-                )
-            for segment in component.transition_segments:
-                cv2.line(
-                    image,
-                    to_pixel(segment.start.x, segment.start.y),
-                    to_pixel(segment.end.x, segment.end.y),
-                    (160, 160, 160),
-                    1,
-                    cv2.LINE_AA,
-                )
+            if layer in ("combined", "edge"):
+                for segment in component.edge_segments:
+                    cv2.line(
+                        image,
+                        to_pixel(segment.start.x, segment.start.y),
+                        to_pixel(segment.end.x, segment.end.y),
+                        (220, 90, 20),
+                        2,
+                        cv2.LINE_AA,
+                    )
+            if layer in ("combined", "coverage"):
+                for segment in component.coverage_segments:
+                    cv2.line(
+                        image,
+                        to_pixel(segment.start.x, segment.start.y),
+                        to_pixel(segment.end.x, segment.end.y),
+                        (30, 160, 50),
+                        2,
+                        cv2.LINE_AA,
+                    )
+            if layer == "combined":
+                for segment in component.transition_segments:
+                    cv2.line(
+                        image,
+                        to_pixel(segment.start.x, segment.start.y),
+                        to_pixel(segment.end.x, segment.end.y),
+                        (160, 160, 160),
+                        1,
+                        cv2.LINE_AA,
+                    )
 
     def _prune(self):
         files = sorted(
@@ -160,10 +204,31 @@ class ArtifactWriter:
             key=lambda path: (path.stat().st_mtime_ns, path.name),
             reverse=True,
         )
+        groups = {}
+        for path in files:
+            group_stem = path.stem
+            for suffix in ("_edge", "_coverage"):
+                if group_stem.endswith(suffix):
+                    group_stem = group_stem[:-len(suffix)]
+                    break
+            groups.setdefault(group_stem, []).append(path)
+
+        ordered_groups = sorted(
+            groups.values(),
+            key=lambda paths: max(
+                (path.stat().st_mtime_ns, path.name) for path in paths),
+            reverse=True,
+        )
         total = 0
-        for index, path in enumerate(files):
-            size = path.stat().st_size
-            if index >= self._max_files or total + size > self._max_total_bytes:
-                path.unlink()
+        file_count = 0
+        for paths in ordered_groups:
+            size = sum(path.stat().st_size for path in paths)
+            if (
+                file_count + len(paths) > self._max_files
+                or total + size > self._max_total_bytes
+            ):
+                for path in paths:
+                    path.unlink()
             else:
                 total += size
+                file_count += len(paths)

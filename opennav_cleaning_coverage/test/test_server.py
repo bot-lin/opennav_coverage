@@ -23,6 +23,7 @@ from rclpy.parameter import Parameter
 from threading import Thread
 from time import monotonic, sleep
 
+from opennav_cleaning_coverage.artifacts import ArtifactWriter
 from opennav_cleaning_coverage.server import CleaningCoverageServer
 
 
@@ -111,7 +112,10 @@ def test_active_server_computes_user_mode_action_and_writes_artifact(tmp_path):
         assert wrapped_result.result.error_code == wrapped_result.result.SUCCESS
         assert len(wrapped_result.result.components) == 1
         assert wrapped_result.result.debug_image_path.endswith(".png")
-        assert (tmp_path / wrapped_result.result.debug_image_path.split("/")[-1]).exists()
+        combined_path = wrapped_result.result.debug_image_path
+        assert (tmp_path / combined_path.split("/")[-1]).exists()
+        for separated_path in ArtifactWriter.separated_paths(combined_path):
+            assert (tmp_path / separated_path.split("/")[-1]).exists()
     finally:
         executor.shutdown(timeout_sec=2.0)
         if spin_thread is not None:

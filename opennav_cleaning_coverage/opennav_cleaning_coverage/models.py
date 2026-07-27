@@ -125,6 +125,8 @@ class PlanComponent:
 class PlanResult:
     components: Tuple[PlanComponent, ...]
     coverage_ratio: float
+    skipped_edge_count: int = 0
+    skipped_coverage_count: int = 0
     uncovered_regions: Tuple[Polygon2D, ...] = ()
     debug_image_path: str = ""
     planning_duration_sec: float = 0.0

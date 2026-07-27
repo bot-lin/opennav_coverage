@@ -68,26 +68,34 @@ class FootprintCollisionChecker:
 
     def validate(self, segments) -> None:
         for segment in segments:
-            swept = self._swept_polygon(segment)
-            if not self._map_bounds.buffer(self._epsilon).covers(swept):
-                raise PlanningError(
-                    "PLANNING_FAILED",
-                    (
-                        f"segment {segment.swath_index} moves the footprint "
-                        "outside the global costmap"
-                    ),
-                )
-            if (
-                not self._hard_obstacles.is_empty
-                and swept.intersects(self._hard_obstacles)
-            ):
-                raise PlanningError(
-                    "PLANNING_FAILED",
-                    (
-                        f"segment {segment.swath_index} sweeps the footprint "
-                        "through a lethal or unknown costmap cell"
-                    ),
-                )
+            message = self._failure_message(segment)
+            if message is not None:
+                raise PlanningError("PLANNING_FAILED", message)
+
+    def filter_safe(self, segments):
+        """Return only segments whose swept footprints are collision-free."""
+        return [
+            segment
+            for segment in segments
+            if self._failure_message(segment) is None
+        ]
+
+    def _failure_message(self, segment):
+        swept = self._swept_polygon(segment)
+        if not self._map_bounds.buffer(self._epsilon).covers(swept):
+            return (
+                f"segment {segment.swath_index} moves the footprint "
+                "outside the global costmap"
+            )
+        if (
+            not self._hard_obstacles.is_empty
+            and swept.intersects(self._hard_obstacles)
+        ):
+            return (
+                f"segment {segment.swath_index} sweeps the footprint "
+                "through a lethal or unknown costmap cell"
+            )
+        return None
 
     def _swept_polygon(self, segment):
         start_coordinates = self._pose_coordinates(

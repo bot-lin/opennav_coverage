@@ -85,6 +85,230 @@ def test_planner_aborts_atomically_when_a_generated_segment_leaves_safe_area():
     assert error.value.code == "PLANNING_FAILED"
 
 
+def test_planner_offsets_costmap_edges_and_returns_safe_coverage():
+    class SafeSwathGenerator:
+        def generate(
+            self, _polygon, _request, component_index, checkpoint=None
+        ):
+            del checkpoint
+            return [
+                CleaningSegment(
+                    segment_type=SegmentType.COVERAGE,
+                    component_index=component_index,
+                    boundary_index=-1,
+                    swath_index=0,
+                    start=Pose2D(1.0, 1.0, 0.0),
+                    end=Pose2D(4.0, 1.0, 0.0),
+                )
+            ]
+
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples(
+            [(0.5, 0.5), (4.5, 0.5), (4.5, 4.5), (0.5, 4.5)]),
+        geometry_mode=GeometryMode.FUSED,
+        op_width=0.5,
+        angle_mode=AngleMode.FIXED,
+        min_coverage_ratio=0.1,
+    )
+    costmap = GridMap(
+        width=5,
+        height=5,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        origin_yaw=0.0,
+        data=tuple(
+            255 if (column, row) == (2, 2) else 0
+            for row in range(5)
+            for column in range(5)
+        ),
+    )
+    footprint = Polygon2D.from_tuples(
+        [(-0.2, -0.2), (0.2, -0.2), (0.2, 0.2), (-0.2, 0.2)])
+
+    result = CleaningCoveragePlanner(
+        swath_generator=SafeSwathGenerator()).plan(
+            request, costmap=costmap, footprint=footprint)
+
+    assert len(result.components) == 1
+    assert len(result.components[0].edge_segments) > 4
+    assert {
+        segment.boundary_index
+        for segment in result.components[0].edge_segments
+    } == {0, 1}
+    assert len(result.components[0].coverage_segments) == 1
+    assert result.skipped_edge_count == 0
+
+
+def test_planner_still_rejects_unsafe_costmap_coverage():
+    class UnsafeSwathGenerator:
+        def generate(
+            self, _polygon, _request, component_index, checkpoint=None
+        ):
+            del checkpoint
+            return [
+                CleaningSegment(
+                    segment_type=SegmentType.COVERAGE,
+                    component_index=component_index,
+                    boundary_index=-1,
+                    swath_index=0,
+                    start=Pose2D(1.0, 2.5, 0.0),
+                    end=Pose2D(4.0, 2.5, 0.0),
+                )
+            ]
+
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples(
+            [(0.5, 0.5), (4.5, 0.5), (4.5, 4.5), (0.5, 4.5)]),
+        geometry_mode=GeometryMode.FUSED,
+        op_width=0.5,
+        angle_mode=AngleMode.FIXED,
+        min_coverage_ratio=0.1,
+    )
+    costmap = GridMap(
+        width=5,
+        height=5,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        origin_yaw=0.0,
+        data=tuple(
+            255 if (column, row) == (2, 2) else 0
+            for row in range(5)
+            for column in range(5)
+        ),
+    )
+    footprint = Polygon2D.from_tuples(
+        [(-0.2, -0.2), (0.2, -0.2), (0.2, 0.2), (-0.2, 0.2)])
+
+    with pytest.raises(PlanningError) as error:
+        CleaningCoveragePlanner(
+            swath_generator=UnsafeSwathGenerator()).plan(
+                request, costmap=costmap, footprint=footprint)
+
+    assert error.value.code == "PLANNING_FAILED"
+    assert "robot-center-safe area" in str(error.value)
+
+
+def test_planner_omits_footprint_colliding_coverage_and_keeps_safe_coverage():
+    class MixedSwathGenerator:
+        def generate(
+            self, _polygon, _request, component_index, checkpoint=None
+        ):
+            del checkpoint
+            return [
+                CleaningSegment(
+                    segment_type=SegmentType.COVERAGE,
+                    component_index=component_index,
+                    boundary_index=-1,
+                    swath_index=0,
+                    start=Pose2D(1.0, 1.5, 0.0),
+                    end=Pose2D(3.6, 1.5, 0.0),
+                ),
+                CleaningSegment(
+                    segment_type=SegmentType.COVERAGE,
+                    component_index=component_index,
+                    boundary_index=-1,
+                    swath_index=1,
+                    start=Pose2D(1.0, 1.5, 0.0),
+                    end=Pose2D(3.9, 1.5, 0.0),
+                ),
+            ]
+
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples(
+            [(0.5, 0.5), (5.5, 0.5), (5.5, 3.5), (0.5, 3.5)]),
+        geometry_mode=GeometryMode.USER,
+        op_width=0.5,
+        angle_mode=AngleMode.FIXED,
+        min_coverage_ratio=0.1,
+    )
+    costmap = GridMap(
+        width=6,
+        height=4,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        origin_yaw=0.0,
+        data=tuple(
+            254 if (column, row) == (4, 1) else 0
+            for row in range(4)
+            for column in range(6)
+        ),
+    )
+    footprint = Polygon2D.from_tuples(
+        [(-0.2, -0.2), (0.2, -0.2), (0.2, 0.2), (-0.2, 0.2)])
+
+    result = CleaningCoveragePlanner(
+        swath_generator=MixedSwathGenerator()).plan(
+            request, costmap=costmap, footprint=footprint)
+
+    assert len(result.components[0].coverage_segments) == 1
+    assert result.components[0].coverage_segments[0].swath_index == 0
+    assert result.skipped_coverage_count == 1
+
+
+def test_planner_offsets_unknown_boundaries_for_footprint_safe_coverage():
+    class BoundarySwathGenerator:
+        def generate(
+            self, polygon, _request, component_index, checkpoint=None
+        ):
+            del checkpoint
+            _, minimum_y, _, maximum_y = polygon.interiors[0].bounds
+            center_y = 0.5 * (minimum_y + maximum_y)
+            minimum_x, _, maximum_x, _ = polygon.interiors[0].bounds
+            return [
+                CleaningSegment(
+                    segment_type=SegmentType.COVERAGE,
+                    component_index=component_index,
+                    boundary_index=-1,
+                    swath_index=0,
+                    start=Pose2D(minimum_x, minimum_y, 0.0),
+                    end=Pose2D(maximum_x, minimum_y, 0.0),
+                ),
+                CleaningSegment(
+                    segment_type=SegmentType.COVERAGE,
+                    component_index=component_index,
+                    boundary_index=-1,
+                    swath_index=1,
+                    start=Pose2D(0.9, center_y, 0.0),
+                    end=Pose2D(1.1, center_y, 0.0),
+                ),
+            ]
+
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples(
+            [(0.5, 0.5), (4.5, 0.5), (4.5, 4.5), (0.5, 4.5)]),
+        geometry_mode=GeometryMode.FUSED,
+        op_width=0.5,
+        angle_mode=AngleMode.FIXED,
+        min_coverage_ratio=0.1,
+    )
+    costmap = GridMap(
+        width=5,
+        height=5,
+        resolution=1.0,
+        origin_x=0.0,
+        origin_y=0.0,
+        origin_yaw=0.0,
+        data=tuple(
+            255 if (column, row) == (2, 2) else 0
+            for row in range(5)
+            for column in range(5)
+        ),
+    )
+    footprint = Polygon2D.from_tuples(
+        [(-0.2, -0.2), (0.2, -0.2), (0.2, 0.2), (-0.2, 0.2)])
+
+    result = CleaningCoveragePlanner(
+        swath_generator=BoundarySwathGenerator()).plan(
+            request, costmap=costmap, footprint=footprint)
+
+    component = result.components[0]
+    assert len(component.coverage_segments) == 2
+    assert component.coverage_segments[0].start.y < 1.3
+
+
 def test_planner_honors_cancellation_before_expensive_generation():
     request = PlanRequest(
         roi=Polygon2D.from_tuples(
