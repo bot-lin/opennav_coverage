@@ -19,6 +19,7 @@ from typing import List
 
 import fields2cover as f2c
 from shapely.geometry import Polygon
+from shapely.validation import explain_validity
 
 from .models import (
     AngleMode,
@@ -185,6 +186,16 @@ class Fields2CoverSwathGenerator:
 
     @staticmethod
     def _to_cells(polygon: Polygon):
+        if not isinstance(polygon, Polygon):
+            raise PlanningError("INVALID_GEOMETRY", "coverage geometry must be a polygon")
+        if not polygon.is_valid:
+            raise PlanningError(
+                "INVALID_GEOMETRY",
+                f"coverage polygon is invalid: {explain_validity(polygon)}",
+            )
+        if polygon.is_empty or not isfinite(polygon.area) or polygon.area <= 0.0:
+            raise PlanningError(
+                "INVALID_GEOMETRY", "coverage polygon must have finite positive area")
         exterior = [
             f2c.Point(float(x), float(y)) for x, y in polygon.exterior.coords]
         cell = f2c.Cell(f2c.LinearRing(f2c.VectorPoint(exterior)))

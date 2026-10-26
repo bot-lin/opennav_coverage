@@ -12,10 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+from pathlib import Path
+
 import pytest
 from shapely.geometry import Polygon
 
 from opennav_cleaning_coverage.f2c_adapter import Fields2CoverSwathGenerator
+import opennav_cleaning_coverage.f2c_adapter as adapter
 from opennav_cleaning_coverage.models import (
     AngleMode,
     Objective,
@@ -101,3 +105,30 @@ def test_balanced_uses_length_tie_breaker_while_min_turns_uses_angle():
 
     assert min_turns_shorter_angle < min_turns_shorter_length
     assert balanced_shorter_length < balanced_shorter_angle
+
+
+def test_invalid_polygon_is_rejected_without_calling_native_bindings(monkeypatch):
+    coordinates = json.loads(
+        (Path(__file__).parent / "fixtures" / "invalid-polygon.json").read_text()
+    )["field"]
+    polygon = Polygon(coordinates)
+    calls = []
+
+    class ForbiddenNative:
+        def __getattr__(self, name):
+            calls.append(name)
+            raise AssertionError("Invalid polygon reached Fields2Cover")
+
+    monkeypatch.setattr(adapter, "f2c", ForbiddenNative())
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples(coordinates),
+        op_width=0.666,
+        angle_mode=AngleMode.FIXED,
+    )
+
+    with pytest.raises(PlanningError) as error:
+        Fields2CoverSwathGenerator().generate(polygon, request, component_index=0)
+
+    assert error.value.code == "INVALID_GEOMETRY"
+    assert "Self-intersection" in str(error.value)
+    assert not calls

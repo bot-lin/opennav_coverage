@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
+from pathlib import Path
+
 import pytest
+from shapely.geometry import Polygon, box
+from shapely.ops import unary_union
 
 from opennav_cleaning_coverage.geometry import EffectiveAreaBuilder
 from opennav_cleaning_coverage.models import (
@@ -209,3 +214,71 @@ def test_strict_geometry_rejects_overlapping_exclusions():
         EffectiveAreaBuilder().build(request)
 
     assert error.value.code == "INVALID_GEOMETRY"
+
+
+def test_generated_self_intersection_is_rejected_before_planning(monkeypatch):
+    coordinates = json.loads(
+        (Path(__file__).parent / "fixtures" / "invalid-polygon.json").read_text()
+    )["field"]
+    invalid = Polygon(coordinates)
+    builder = EffectiveAreaBuilder()
+    monkeypatch.setattr(builder, "_costmap_traversable", lambda *a, **kw: invalid)
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples([]),
+        geometry_mode=GeometryMode.COSTMAP,
+        op_width=0.5,
+    )
+    grid = GridMap(2, 2, 1.0, 0.0, 0.0, 0.0, (0,) * 4)
+
+    with pytest.raises(PlanningError) as error:
+        builder.build(request, grid)
+
+    assert error.value.code == "INVALID_GEOMETRY"
+    assert "Self-intersection" in str(error.value)
+
+
+@pytest.mark.parametrize("blocked_cost", [100, 255])
+def test_simplification_does_not_remove_blocked_costmap_area(blocked_cost):
+    selected = {(column, row) for row in range(1, 7) for column in range(1, row + 1)}
+    grid = GridMap(
+        width=8, height=8, resolution=1.0,
+        origin_x=0.0, origin_y=0.0, origin_yaw=0.0,
+        data=tuple(
+            blocked_cost if (column, row) in selected else 0
+            for row in range(8) for column in range(8)
+        ),
+    )
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples([]),
+        geometry_mode=GeometryMode.COSTMAP,
+        op_width=0.5,
+    )
+
+    components = EffectiveAreaBuilder(
+        min_obstacle_area=0.0, min_cleanable_area=0.0).build(request, grid)
+
+    blocked = unary_union([box(x, y, x + 1, y + 1) for x, y in selected])
+    assert unary_union(components).intersection(blocked).area == pytest.approx(0.0)
+
+
+def test_touching_costmap_raster_generates_only_valid_components():
+    import cv2
+
+    mask = cv2.imread(str(
+        Path(__file__).parent / "fixtures" / "crossing-regression-mask.png"), 0)
+    height, width = mask.shape
+    grid = GridMap(
+        width=width, height=height, resolution=0.05,
+        origin_x=0.0, origin_y=0.0, origin_yaw=0.0,
+        data=tuple(0 if value else 255 for value in mask.ravel()),
+    )
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples([]),
+        geometry_mode=GeometryMode.COSTMAP,
+        op_width=0.5,
+    )
+
+    components = EffectiveAreaBuilder(min_cleanable_area=0.0).build(request, grid)
+
+    assert components
+    assert all(value.is_valid and value.exterior.is_simple for value in components)

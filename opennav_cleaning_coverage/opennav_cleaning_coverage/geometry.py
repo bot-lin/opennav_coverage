@@ -171,15 +171,14 @@ class EffectiveAreaBuilder:
                 0.5 * op_width * grid.resolution,
             )
         retained = [
-            polygon.simplify(
-                0.5 * grid.resolution, preserve_topology=True)
+            self._simplify_blocked_geometry(polygon, 0.5 * grid.resolution)
             for polygon in self._geometry_polygons(known_obstacles)
             if polygon.area + self._epsilon >= minimum_area
         ]
         blocked_values = retained
         if not unknown.is_empty:
-            unknown = unknown.simplify(
-                0.5 * grid.resolution, preserve_topology=True)
+            unknown = self._simplify_blocked_geometry(
+                unknown, 0.5 * grid.resolution)
             if footprint_clearance > 0.0:
                 unknown = unknown.buffer(
                     footprint_clearance + self._epsilon)
@@ -199,6 +198,14 @@ class EffectiveAreaBuilder:
                 -(footprint_clearance + self._epsilon))
         traversable = map_bounds.difference(blocked)
         return self._transform_costmap_geometry(traversable, grid)
+
+    @staticmethod
+    def _simplify_blocked_geometry(geometry, tolerance):
+        """Simplify only when topology and the full blocked area are preserved."""
+        simplified = geometry.simplify(tolerance, preserve_topology=True)
+        if simplified.is_valid and simplified.covers(geometry):
+            return simplified
+        return geometry
 
     @staticmethod
     def _transform_costmap_geometry(geometry, grid):
@@ -263,6 +270,11 @@ class EffectiveAreaBuilder:
 
     @staticmethod
     def _sorted_polygons(geometry) -> List[Polygon]:
+        if not geometry.is_valid:
+            raise PlanningError(
+                "INVALID_GEOMETRY",
+                f"effective area is invalid: {explain_validity(geometry)}",
+            )
         if isinstance(geometry, Polygon):
             polygons: Sequence[Polygon] = [geometry]
         elif isinstance(geometry, MultiPolygon):
@@ -273,6 +285,9 @@ class EffectiveAreaBuilder:
         else:
             polygons = []
         polygons = [orient(value, sign=1.0) for value in polygons if not value.is_empty]
+        if any(not isfinite(value.area) or value.area <= 0.0 for value in polygons):
+            raise PlanningError(
+                "INVALID_GEOMETRY", "effective area must have finite positive area")
         polygons.sort(key=lambda value: (-value.area, value.centroid.x, value.centroid.y))
         if not polygons:
             raise PlanningError("NO_CLEANABLE_AREA", "the effective area is empty")
