@@ -37,13 +37,75 @@ import cv2
 import numpy as np
 import fields2cover as f2c
 from shapely.geometry import Polygon as ShapelyPolygon, LinearRing
-from shapely.validation import make_valid
+from shapely.validation import explain_validity, make_valid
 from geometry_msgs.msg import Point32
 import xml.etree.ElementTree as ET
 import re
 # from opennav_coverage_demo.robot_nagivator import BasicNavigator
 # 配置日志记录
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+class InvalidCoveragePolygon(ValueError):
+    """A polygon cannot safely be passed to Fields2Cover."""
+
+
+def _coverage_polygon(coords, label):
+    """Build a finite, nonempty, valid polygon or raise an API-safe error."""
+    try:
+        if len(coords) < 3 or any(
+            len(point) != 2 or not all(math.isfinite(value) for value in point)
+            for point in coords
+        ):
+            raise ValueError('expected at least three finite XY coordinates')
+        polygon = ShapelyPolygon(coords)
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise InvalidCoveragePolygon(
+            f'Invalid {label} polygon: expected at least three finite XY coordinates'
+        ) from exc
+    if polygon.is_empty:
+        reason = 'empty polygon'
+    elif not polygon.is_valid:
+        reason = explain_validity(polygon)
+    elif polygon.area <= 0 or not math.isfinite(polygon.area):
+        reason = 'zero or non-finite area'
+    else:
+        return polygon
+    raise InvalidCoveragePolygon(f'Invalid {label} polygon: {reason}')
+
+
+def _costmap_contour_polygons(contour, keep_inside=True):
+    """Return valid components from a generated pixel contour, preserving topology."""
+    if len(contour) < 3:
+        return []
+    raw = ShapelyPolygon(contour.reshape(-1, 2))
+    if not raw.is_valid:
+        logging.warning('[COVERAGE-DIAG] repairing generated contour: %s',
+                        explain_validity(raw))
+        raw = make_valid(raw)
+    pending = [raw]
+    parts = []
+    while pending:
+        geometry = pending.pop()
+        if geometry.geom_type == 'Polygon':
+            if not geometry.is_empty and geometry.area > 0:
+                parts.append(geometry)
+        elif hasattr(geometry, 'geoms'):
+            pending.extend(geometry.geoms)
+        # Collapsed lines and points have no coverage area.
+
+    tolerance = 0.005 * cv2.arcLength(contour, True)
+    result = []
+    for part in parts:
+        simplified = part.simplify(tolerance, preserve_topology=True)
+        if (simplified.geom_type != 'Polygon' or simplified.is_empty
+                or not simplified.is_valid or simplified.area <= 0
+                or (keep_inside and not part.covers(simplified))
+                or (not keep_inside and not simplified.covers(part))):
+            # Keep the valid boundary if simplification adds free area or removes obstacles.
+            simplified = part
+        result.append(simplified)
+    return result
 
 
 class CoverageNavigatorTester(Node):
@@ -127,7 +189,7 @@ class CoverageNavigatorTester(Node):
         for point in contour:
             pixel_x, pixel_y = point[0][0], point[0][1]  # OpenCV contour format
             world_x, world_y = self.pixel_to_world(pixel_x, pixel_y, resolution, origin_x, origin_y)
-            world_contour.append([world_x, world_y])
+            world_contour.append([float(world_x), float(world_y)])
         return world_contour
 
 
@@ -730,38 +792,28 @@ class CoverageNavigatorTester(Node):
                 self.get_logger().warn('No free space contours found within the user polygon')
                 return None, []
             
-            # Find the largest contour
+            # Rank valid components, not a self-touching contour that may span several regions.
             largest_contour = None
+            largest_polygon = None
             largest_area_pixels = 0
-            
             for contour in contours:
-                area_pixels = cv2.contourArea(contour)
-                if area_pixels > largest_area_pixels and area_pixels > 100:  # Minimum size threshold
-                    largest_area_pixels = area_pixels
-                    largest_contour = contour
-            
-            if largest_contour is None:
-                self.get_logger().warn('No sufficiently large free space found within the user polygon')
+                if cv2.contourArea(contour) <= 100:
+                    continue
+                for polygon in _costmap_contour_polygons(contour, keep_inside=True):
+                    if polygon.area > max(100, largest_area_pixels):
+                        largest_area_pixels = polygon.area
+                        largest_polygon = polygon
+                        largest_contour = contour
+
+            if largest_polygon is None:
+                self.get_logger().warn('No sufficiently large valid free space found within the user polygon')
                 return None, []
-            
-            # Simplify the polygon to reduce number of points
-            # With Shapely validation in place, we can use a reasonable epsilon
-            epsilon = 0.005 * cv2.arcLength(largest_contour, True)
-            simplified_contour = cv2.approxPolyDP(largest_contour, epsilon, True)
-            
-            # Check if simplified contour is valid (not too few points)
-            if len(simplified_contour) < 3:
-                self.get_logger().warn("Simplified contour has too few points, using original contour")
-                simplified_contour = largest_contour
-            
-            # Convert the simplified contour back to world coordinates
-            world_polygon = []
-            for point in simplified_contour:
-                pixel_x, pixel_y = point[0][0], point[0][1]
-                world_x = origin_x + (pixel_x * resolution)
-                world_y = origin_y + (pixel_y * resolution)
-                world_polygon.append([world_x, world_y])
-            
+
+            world_polygon = self.convert_contour_to_world(
+                np.asarray(largest_polygon.exterior.coords).reshape(-1, 1, 2),
+                resolution, origin_x, origin_y)
+            _coverage_polygon(world_polygon, 'generated field')
+
             largest_area_meters = largest_area_pixels * (resolution ** 2)
             self.get_logger().info(f'Found largest free space: area={largest_area_meters:.2f} m², points={len(world_polygon)}')
             self.get_logger().info(f'Free space polygon: {world_polygon[:5]}...')  # First 5 points
@@ -786,26 +838,18 @@ class CoverageNavigatorTester(Node):
             # Find obstacle contours
             obstacle_contours, _ = cv2.findContours(cropped_obstacles, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
-            # Convert obstacle contours to world coordinates
+            # Preserve every valid obstacle component when a touching contour splits.
             obstacle_polygons = []
             for obstacle_contour in obstacle_contours:
-                if cv2.contourArea(obstacle_contour) > 25:  # Minimum obstacle size threshold
-                    # Simplify the obstacle polygon
-                    # With Shapely validation, we can use normal simplification
-                    epsilon = 0.005 * cv2.arcLength(obstacle_contour, True)
-                    simplified_obstacle = cv2.approxPolyDP(obstacle_contour, epsilon, True)
-                    
-                    # Convert to world coordinates
-                    obstacle_world = []
-                    for point in simplified_obstacle:
-                        pixel_x, pixel_y = point[0][0], point[0][1]
-                        world_x = origin_x + (pixel_x * resolution)
-                        world_y = origin_y + (pixel_y * resolution)
-                        obstacle_world.append([world_x, world_y])
-                    
-                    if len(obstacle_world) >= 3:  # Valid polygon needs at least 3 points
-                        obstacle_polygons.append(obstacle_world)
-            
+                if cv2.contourArea(obstacle_contour) <= 25:
+                    continue
+                for polygon in _costmap_contour_polygons(obstacle_contour, keep_inside=False):
+                    obstacle_world = self.convert_contour_to_world(
+                        np.asarray(polygon.exterior.coords).reshape(-1, 1, 2),
+                        resolution, origin_x, origin_y)
+                    _coverage_polygon(obstacle_world, 'generated obstacle')
+                    obstacle_polygons.append(obstacle_world)
+
             self.get_logger().info(f'Found {len(obstacle_polygons)} obstacles within the cropped area')
             
             # Save debug image with obstacles
@@ -1148,139 +1192,42 @@ class CoverageNavigatorTester(Node):
         return
 
     def toPolygon(self, field, rings):
-        """
-        Convert field and rings (obstacles) to Fields2Cover Cells object.
-        Uses Shapely to fix any invalid geometries (self-intersections) before conversion.
-        """
-        try:
-            # 1. Create and fix outer polygon using Shapely
-            if not field:
-                return f2c.Cells()
-                
-            # Ensure closed ring for shapely
-            outer_coords = list(field)
-            if len(outer_coords) > 0 and (outer_coords[0] != outer_coords[-1]):
-                outer_coords.append(outer_coords[0])
-                
-            poly = ShapelyPolygon(outer_coords)
-            
-            # Fix invalid geometry (buffer(0) trick or make_valid)
-            if not poly.is_valid:
-                self.get_logger().warn(f"Outer polygon is invalid: {poly.is_valid.reason if hasattr(poly, 'is_valid') else 'unknown'}. Fixing...")
-                poly = make_valid(poly)
-                # If result is MultiPolygon, take the largest one
-                if poly.geom_type == 'MultiPolygon':
-                    poly = max(poly.geoms, key=lambda a: a.area)
-                elif poly.geom_type == 'GeometryCollection':
-                     # Extract Polygons from collection
-                    polys = [g for g in poly.geoms if g.geom_type == 'Polygon']
-                    if polys:
-                        poly = max(polys, key=lambda a: a.area)
-                    else:
-                        self.get_logger().error("Failed to fix polygon: No polygon found in fixed geometry")
-                        return f2c.Cells()
-            
-            # 2. Process obstacles (holes)
-            valid_holes = []
-            for ring in rings:
-                if not ring:
-                    continue
-                    
-                # Ensure closed ring
-                hole_coords = list(ring)
-                if len(hole_coords) > 0 and (hole_coords[0] != hole_coords[-1]):
-                    hole_coords.append(hole_coords[0])
-                
-                hole_poly = ShapelyPolygon(hole_coords)
-                
-                if not hole_poly.is_valid:
-                    hole_poly = make_valid(hole_poly)
-                    if hole_poly.geom_type == 'MultiPolygon':
-                        # If obstacle splits, add all parts
-                        for part in hole_poly.geoms:
-                            valid_holes.append(part)
-                        continue
-                    elif hole_poly.geom_type == 'GeometryCollection':
-                        for part in hole_poly.geoms:
-                            if part.geom_type == 'Polygon':
-                                valid_holes.append(part)
-                        continue
-                
-                valid_holes.append(hole_poly)
+        """Validate geometry before conversion; never pass invalid fallback cells."""
+        logging.info('[COVERAGE-DIAG] polygon_input=%s',
+                     json.dumps({'field': field, 'rings': rings}, default=str))
+        polygon = _coverage_polygon(field, 'field')
+        if not isinstance(rings, (list, tuple)):
+            raise InvalidCoveragePolygon('Invalid obstacles: expected a list of polygon rings')
+        holes = [_coverage_polygon(ring, f'obstacle {index + 1}')
+                 for index, ring in enumerate(rings)]
+        final_polygon = polygon
+        for hole in holes:
+            final_polygon = final_polygon.difference(hole)
+        if final_polygon.is_empty:
+            raise InvalidCoveragePolygon('Coverage area is empty after subtracting obstacles')
+        if (final_polygon.geom_type not in ('Polygon', 'MultiPolygon')
+                or not final_polygon.is_valid
+                or final_polygon.area <= 0
+                or not math.isfinite(final_polygon.area)):
+            raise InvalidCoveragePolygon(
+                'Invalid coverage area after subtracting obstacles: '
+                + explain_validity(final_polygon))
 
-            # 3. Subtract holes from the main polygon
-            # This handles cases where holes might overlap or be outside the main polygon
-            final_poly = poly
-            for hole in valid_holes:
-                try:
-                    final_poly = final_poly.difference(hole)
-                except Exception as e:
-                    self.get_logger().warn(f"Failed to subtract hole: {e}")
+        def shapely_to_f2c_cell(poly):
+            logging.info('[COVERAGE-DIAG] native_cell_convert wkt=%s', poly.wkt)
+            points = [f2c.Point(x, y) for x, y in poly.exterior.coords]
+            cell = f2c.Cell(f2c.LinearRing(f2c.VectorPoint(points)))
+            for interior in poly.interiors:
+                hole_points = [f2c.Point(x, y) for x, y in interior.coords]
+                cell.addRing(f2c.LinearRing(f2c.VectorPoint(hole_points)))
+            return cell
 
-            # 4. Convert back to Fields2Cover types
-            cells = f2c.Cells()
-            
-            def shapely_to_f2c_cell(shapely_poly):
-                # Extract exterior
-                ext_coords = list(shapely_poly.exterior.coords)
-                points = []
-                for x, y in ext_coords:
-                    points.append(f2c.Point(x, y))
-                
-                cell = f2c.Cell(f2c.LinearRing(f2c.VectorPoint(points)))
-                
-                # Extract interiors (holes)
-                for interior in shapely_poly.interiors:
-                    int_coords = list(interior.coords)
-                    hole_points = []
-                    for x, y in int_coords:
-                        hole_points.append(f2c.Point(x, y))
-                    cell.addRing(f2c.LinearRing(f2c.VectorPoint(hole_points)))
-                return cell
-
-            if final_poly.geom_type == 'Polygon':
-                cells.addGeometry(shapely_to_f2c_cell(final_poly))
-            elif final_poly.geom_type == 'MultiPolygon':
-                for part in final_poly.geoms:
-                    cells.addGeometry(shapely_to_f2c_cell(part))
-            
-            return cells
-            
-        except Exception as e:
-            self.get_logger().error(f"Error converting to F2C polygon: {str(e)}")
-            # Fallback to simple conversion if shapely fails
-            self.get_logger().warn("Falling back to simple conversion")
-            return self._toPolygon_simple(field, rings)
-
-    def _toPolygon_simple(self, field, rings):
-        """Original simple conversion method as fallback"""
-        points = []
-        for coord in field:
-            p = f2c.Point(coord[0], coord[1])
-            points.append(p)
-        
-        # Ensure outer ring is closed
-        if len(points) > 0 and (points[0].X() != points[-1].X() or points[0].Y() != points[-1].Y()):
-            points.append(points[0])
-            
-        cell = f2c.Cell(f2c.LinearRing(f2c.VectorPoint(points)))
-        
-        for ring in rings:
-            r = f2c.LinearRing()
-            ring_points = []
-            for coord in ring:
-                p = f2c.Point(coord[0], coord[1])
-                r.addPoint(p)
-                ring_points.append(p)
-            
-            # Ensure inner rings are closed
-            if len(ring_points) > 0 and (ring_points[0].X() != ring_points[-1].X() or ring_points[0].Y() != ring_points[-1].Y()):
-                r.addPoint(ring_points[0])
-            
-            cell.addRing(r)
-            
-        cells = f2c.Cells(cell)
+        cells = f2c.Cells()
+        parts = (final_polygon,) if final_polygon.geom_type == 'Polygon' else final_polygon.geoms
+        for part in parts:
+            cells.addGeometry(shapely_to_f2c_cell(part))
         return cells
+
     
     def generate_coverage_path(self, 
                                cells,
@@ -1600,6 +1547,7 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                     return jsonify({"code": 1,"error": "缺少'field'字段"}), 400
                     
                 user_field = data['field']
+                _coverage_polygon(user_field, 'field')
                 self.current_polygon = user_field
                 if not isinstance(user_field, list) or len(user_field) < 3:
                     return jsonify({"code": 1,"error": "'field'必须是至少包含3个坐标点的列表"}), 400
@@ -1680,10 +1628,9 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                 robot_op_width = data.get('robot_op_width', 1.0)
                 if robot_op_width <= 0:
                     return jsonify({"code": 1,"error": "'robot_op_width'必须大于0"}), 400
+                cells = self.toPolygon(field, obstacles_to_use)
                 self.update_move_forward_xml(robot_op_width)
                 self.current_robot_op_width = robot_op_width
-
-                cells = self.toPolygon(field, obstacles_to_use)
                 self.generate_coverage_path(
                     cells=cells,
                     robot_width= data.get('robot_width', 1.0),
@@ -1739,6 +1686,13 @@ class CoverageNavigatorServer(CoverageNavigatorTester):
                             self.visualize_field_polygon(field, "cropped_free_space_with_routes", coverage_routes=self.current_routes)
 
                 return jsonify({"code": 0, "path": self.current_routes, "status": "导航任务已启动"}), 202
+            except InvalidCoveragePolygon as exc:
+                logging.warning('[COVERAGE-DIAG] rejected polygon: %s', exc)
+                return jsonify({
+                    "code": 1,
+                    "error_type": "invalid_polygon",
+                    "error": str(exc),
+                }), 422
             except Exception as e:
                 logging.exception("处理导航请求时出错:")
                 return jsonify({"code": 1, "error": f"服务器处理请求时发生错误: {str(e)}"}), 500
