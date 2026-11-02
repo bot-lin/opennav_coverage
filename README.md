@@ -96,6 +96,14 @@ Decomposition can be `NONE`, `BOUSTROPHEDON`, or `TRAPEZOIDAL`. `AUTO` skips
 decomposition for simple convex polygons and uses Boustrophedon decomposition
 for concave polygons or polygons with holes.
 
+Automatic route graphs are limited to 500 nodes, using a conservative bound
+that counts every decomposed boundary and four nodes per swath. Larger simple
+convex single-cell regions use Boustrophedon ordering without a route graph,
+preserving every swath. Other regions above the limit fail with
+`PLANNING_FAILED` and a message suggesting a smaller area or wider operation
+width, before the native all-pairs route allocation. The ROS action schema is
+unchanged.
+
 `headland_width` defaults to zero. Only one coverage pass is generated.
 Turning radius, curvature, speed, and connector paths are intentionally left
 to downstream Nav2 execution.

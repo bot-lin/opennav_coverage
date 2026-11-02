@@ -33,6 +33,9 @@ from .models import (
 )
 
 
+MAX_AUTO_ROUTE_NODES = 500
+
+
 class Fields2CoverSwathGenerator:
     """Generate and order endpoint-only swaths for one effective component."""
 
@@ -87,8 +90,30 @@ class Fields2CoverSwathGenerator:
         segments = []
         swath_index = 0
         checkpoint()
-        route = f2c.RP_RoutePlannerBase().genRoute(cells, swaths_by_cell)
-        ordered_groups = route.getVectorSwaths()
+        boundary_vertices = sum(
+            cells.getGeometry(cell).getGeometry(ring).size()
+            for cell in range(cells.size())
+            for ring in range(cells.getGeometry(cell).size()))
+        swath_count = sum(
+            swaths_by_cell.at(cell).size() for cell in range(swaths_by_cell.size()))
+        # Bound endpoints and border projections before native all-pairs path allocation.
+        node_bound = boundary_vertices + 4 * swath_count
+        if node_bound > MAX_AUTO_ROUTE_NODES:
+            if (cells.size() == 1 and swaths_by_cell.size() == 1
+                    and cells.getGeometry(0).size() == 1
+                    and cells.getGeometry(0).isConvex()):
+                ordered_groups = f2c.SwathsByCells()
+                ordered_groups.push_back(f2c.RP_Boustrophedon().genSortedSwaths(
+                    swaths_by_cell.at(0), 0))
+            else:
+                raise PlanningError(
+                    "PLANNING_FAILED",
+                    "Coverage area is too complex for automatic routing "
+                    f"(up to {node_bound} graph nodes; limit {MAX_AUTO_ROUTE_NODES}). "
+                    "Use a smaller area or a wider operation width.")
+        else:
+            route = f2c.RP_RoutePlannerBase().genRoute(cells, swaths_by_cell)
+            ordered_groups = route.getVectorSwaths()
         for cell_index in range(ordered_groups.size()):
             checkpoint()
             ordered = ordered_groups[cell_index]
