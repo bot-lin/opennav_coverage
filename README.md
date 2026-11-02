@@ -97,12 +97,13 @@ decomposition for simple convex polygons and uses Boustrophedon decomposition
 for concave polygons or polygons with holes.
 
 Automatic route graphs are limited to 500 nodes, using a conservative bound
-that counts every decomposed boundary and four nodes per swath. Larger simple
-convex single-cell regions use Boustrophedon ordering without a route graph,
-preserving every swath. Other regions above the limit fail with
-`PLANNING_FAILED` and a message suggesting a smaller area or wider operation
-width, before the native all-pairs route allocation. The ROS action schema is
-unchanged.
+that counts every decomposed boundary and four nodes per swath. Above this
+limit, each cell uses Boustrophedon ordering and cells retain their deterministic
+decomposition order, without allocating the global route graph. This also
+supports concave regions and holes while preserving every generated swath and
+the original obstacle geometry. Connections between swaths remain Nav2's
+responsibility. This fallback trades global route optimization for bounded
+graph memory. The ROS action schema is unchanged.
 
 `headland_width` defaults to zero. Only one coverage pass is generated.
 Turning radius, curvature, speed, and connector paths are intentionally left

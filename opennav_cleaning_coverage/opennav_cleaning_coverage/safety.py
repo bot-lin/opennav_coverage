@@ -19,6 +19,7 @@ from math import cos, sin
 from shapely import affinity
 from shapely.geometry import Point, Polygon, box
 from shapely.ops import unary_union
+from shapely.prepared import prep
 
 from .grid_geometry import union_selected_cells
 from .models import PlanningError
@@ -65,6 +66,7 @@ class FootprintCollisionChecker:
             checkpoint=checkpoint,
         )
         self._hard_obstacles = self._transform(hard_cells, costmap)
+        self._prepared_hard_obstacles = prep(self._hard_obstacles)
 
     def validate(self, segments) -> None:
         for segment in segments:
@@ -89,7 +91,7 @@ class FootprintCollisionChecker:
             )
         if (
             not self._hard_obstacles.is_empty
-            and swept.intersects(self._hard_obstacles)
+            and self._prepared_hard_obstacles.intersects(swept)
         ):
             return (
                 f"segment {segment.swath_index} sweeps the footprint "

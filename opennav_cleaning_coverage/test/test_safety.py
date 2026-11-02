@@ -38,7 +38,8 @@ def segment(end_x):
     )
 
 
-def test_swept_footprint_rejects_lethal_cell_before_centerline_reaches_it():
+@pytest.mark.parametrize("blocked_cost", [254, 255])
+def test_swept_footprint_rejects_blocked_cell_before_centerline_reaches_it(blocked_cost):
     costmap = GridMap(
         width=6,
         height=4,
@@ -47,7 +48,7 @@ def test_swept_footprint_rejects_lethal_cell_before_centerline_reaches_it():
         origin_y=0.0,
         origin_yaw=0.0,
         data=tuple(
-            254 if (column, row) == (4, 1) else 0
+            blocked_cost if (column, row) == (4, 1) else 0
             for row in range(4)
             for column in range(6)
         ),

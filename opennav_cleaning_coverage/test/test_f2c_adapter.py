@@ -12,11 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from collections import Counter
 import json
 from pathlib import Path
 
 import pytest
-from shapely.geometry import Polygon
+from shapely.geometry import LineString, Polygon
 
 from opennav_cleaning_coverage.f2c_adapter import Fields2CoverSwathGenerator
 import opennav_cleaning_coverage.f2c_adapter as adapter
@@ -136,7 +137,7 @@ def test_invalid_polygon_is_rejected_without_calling_native_bindings(monkeypatch
 
 
 @pytest.mark.parametrize("op_width, limit", [(1.0, 1), (0.02, 500)])
-def test_complex_route_is_rejected_before_allocating_native_graph(monkeypatch, op_width, limit):
+def test_complex_route_preserves_swaths_without_native_graph(monkeypatch, op_width, limit):
     polygon = Polygon([(0, 0), (4, 0), (4, 2), (2, 2), (2, 4), (0, 4)])
     request = PlanRequest(
         roi=Polygon2D.from_tuples(polygon.exterior.coords[:-1]),
@@ -151,9 +152,11 @@ def test_complex_route_is_rejected_before_allocating_native_graph(monkeypatch, o
 
     monkeypatch.setattr(adapter, "MAX_AUTO_ROUTE_NODES", limit)
     monkeypatch.setattr(adapter.f2c, "RP_RoutePlannerBase", forbidden_graph)
-    with pytest.raises(PlanningError, match=f"limit {limit}") as error:
-        Fields2CoverSwathGenerator().generate(polygon, request, component_index=0)
-    assert error.value.code == "PLANNING_FAILED"
+    segments = Fields2CoverSwathGenerator().generate(polygon, request, component_index=0)
+    assert len(segments) == round(4 / op_width)
+    assert len({(segment.start.y, segment.end.y) for segment in segments}) == len(segments)
+    assert all(polygon.covers(LineString([(s.start.x, s.start.y), (s.end.x, s.end.y)]))
+               for s in segments)
     assert not calls
 
 
@@ -219,5 +222,44 @@ def test_route_node_bound_includes_hole_boundaries(monkeypatch):
         op_width=1.0, angle_mode=AngleMode.FIXED,
         decomposition=DecompositionMode.NONE,
     )
-    with pytest.raises(PlanningError, match=f"limit {limit}"):
-        generator.generate(polygon, request, component_index=0)
+    segments = generator.generate(polygon, request, component_index=0)
+    assert len(segments) == swaths.at(0).size()
+    assert all(polygon.covers(LineString([(s.start.x, s.start.y), (s.end.x, s.end.y)]))
+               for s in segments)
+
+
+def test_decomposed_fallback_preserves_every_cell_swath_and_is_deterministic(monkeypatch):
+    polygon = Polygon([(0, 0), (6, 0), (6, 6), (4, 6), (4, 2), (2, 2), (2, 6), (0, 6)])
+    request = PlanRequest(
+        roi=Polygon2D.from_tuples(polygon.exterior.coords[:-1]),
+        op_width=0.5, angle_mode=AngleMode.FIXED,
+        decomposition=DecompositionMode.BOUSTROPHEDON,
+    )
+    generator = Fields2CoverSwathGenerator()
+    cells = generator._decompose(generator._to_cells(polygon), polygon, request.decomposition)
+    assert cells.size() > 1
+    native_generator = adapter.f2c.SG_BruteForce()
+    native_generator.setAllowOverlap(False)
+    swaths = native_generator.generateSwaths(0.0, request.op_width, cells)
+
+    def endpoints(a, b):
+        return tuple(sorted(((round(a.x, 8), round(a.y, 8)), (round(b.x, 8), round(b.y, 8)))))
+
+    expected = Counter()
+    for cell in range(swaths.size()):
+        for index in range(swaths.at(cell).size()):
+            swath = swaths.at(cell).at(index)
+            start, end = swath.startPoint(), swath.endPoint()
+            expected[tuple(sorted(((round(start.X(), 8), round(start.Y(), 8)),
+                                   (round(end.X(), 8), round(end.Y(), 8)))))] += 1
+
+    def forbidden_graph():
+        raise AssertionError("Decomposed fallback allocated the native route graph")
+
+    monkeypatch.setattr(adapter, "MAX_AUTO_ROUTE_NODES", 1)
+    monkeypatch.setattr(adapter.f2c, "RP_RoutePlannerBase", forbidden_graph)
+    segments = generator.generate(polygon, request, component_index=0)
+    assert Counter(endpoints(s.start, s.end) for s in segments) == expected
+    assert generator.generate(polygon, request, component_index=0) == segments
+    assert all(polygon.covers(LineString([(s.start.x, s.start.y), (s.end.x, s.end.y)]))
+               for s in segments)

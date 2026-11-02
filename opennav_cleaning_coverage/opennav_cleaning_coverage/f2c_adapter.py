@@ -99,18 +99,14 @@ class Fields2CoverSwathGenerator:
         # Bound endpoints and border projections before native all-pairs path allocation.
         node_bound = boundary_vertices + 4 * swath_count
         if node_bound > MAX_AUTO_ROUTE_NODES:
-            if (cells.size() == 1 and swaths_by_cell.size() == 1
-                    and cells.getGeometry(0).size() == 1
-                    and cells.getGeometry(0).isConvex()):
-                ordered_groups = f2c.SwathsByCells()
+            # Preserve all geometry and swaths; Nav2 handles connections between cells.
+            ordered_groups = f2c.SwathsByCells()
+            for cell in range(swaths_by_cell.size()):
+                checkpoint()
+                if not swaths_by_cell.at(cell).size():
+                    continue
                 ordered_groups.push_back(f2c.RP_Boustrophedon().genSortedSwaths(
-                    swaths_by_cell.at(0), 0))
-            else:
-                raise PlanningError(
-                    "PLANNING_FAILED",
-                    "Coverage area is too complex for automatic routing "
-                    f"(up to {node_bound} graph nodes; limit {MAX_AUTO_ROUTE_NODES}). "
-                    "Use a smaller area or a wider operation width.")
+                    swaths_by_cell.at(cell), 0))
         else:
             route = f2c.RP_RoutePlannerBase().genRoute(cells, swaths_by_cell)
             ordered_groups = route.getVectorSwaths()
